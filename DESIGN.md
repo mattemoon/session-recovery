@@ -16,11 +16,18 @@ Reconstruct file edit history from OpenClaw session logs as git commits, with de
 
 **Inside repository:**
 - Resolve directly, paths are unambiguous
+- This is the common case and requires no remapping
 
 **Outside repository:**
-- Find common root of: session `cwd` + all write/edit paths in transcript
-- Remap to `<session-id>/<common-prefix-stripped-path>` inside repo
-- Consistent naming, no leaked absolute paths
+- Find common root of: all session `cwd` values + all write/edit paths across all transcripts
+- If common root is inside the repo: use paths directly (no ambiguity)
+- If common root is outside the repo: remap to `unknown/<common-prefix-stripped-path>`
+- The `unknown/` prefix is fixed (not session-id) for simplicity and determinism across multi-session recovery
+- Files here are expected to be moved by a human in a subsequent commit
+
+**`--ignore-external` flag:**
+- When set, completely ignore all files outside the current repository
+- Useful when recovering only in-repo changes from sessions that also touched external files
 
 ## Operations
 
@@ -88,6 +95,7 @@ If combining multiple transcripts:
 2. Subsequent sessions: orphan is immediately merged into ongoing branch
    - Merge message: "Including OpenClaw session <id> in recovery"
 3. This ensures the same initial commit hash exists in all branches recovered from that session
+4. You can find all branches derived from a session by searching for its initial orphan commit hash
 
 ### Determinism Across Runs
 
@@ -112,7 +120,9 @@ Claude Opus 4.5 <noreply@anthropic.com>
 
 ## Final State
 
-Leave repository in uncommitted merge state. Draft merge commit message:
+Leave repository in uncommitted merge state:
+- Merge strategy: prefer recovery branch versions on conflicts
+- Draft merge commit message:
 
 **Single session:**
 ```
@@ -123,6 +133,15 @@ Merge recovered OpenClaw session <id>
 ```
 Merge recovered OpenClaw sessions <id1>, <id2>, and <id3>
 ```
+
+## CLI Flags
+
+- `--ignore-external`: Skip all files outside the current repository
+- `--branch <name>`: Explicit branch name (otherwise derived from first session id)
+- `--dry-run`: Show what would be done without making changes
+- `--verbose`: Detailed output
+- `--list-only`: Just list operations, don't create commits
+- `--filter <prefix>`: Only include files matching path prefix
 
 ## Future Considerations
 
