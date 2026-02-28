@@ -427,16 +427,14 @@ fn replay_operations(
 
     // Now merge into original HEAD
     if let Some(orig_id) = original_head {
-        let orig_commit = repo.find_commit(orig_id)?;
         let branch_commit = repo.find_commit(parent_commit_id)?;
 
-        // Checkout original branch first
-        repo.set_head(&format!("refs/heads/{}", 
-            repo.head()?.shorthand().unwrap_or("main")))?;
+        // Create annotated commit for merge
+        let annotated = repo.find_annotated_commit(branch_commit.id())?;
 
         // Start merge (don't commit)
         let mut merge_opts = git2::MergeOptions::new();
-        repo.merge(&[&branch_commit.as_object().peel_to_commit()?], Some(&mut merge_opts), None)?;
+        repo.merge(&[&annotated], Some(&mut merge_opts), None)?;
 
         eprintln!("\nRepository is now in uncommitted merge state.");
         eprintln!("To complete: git commit");
