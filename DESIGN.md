@@ -1,5 +1,7 @@
 # Session Recovery - Design Document
 
+Inspired by [claude-file-recovery](https://github.com/hjtenklooster/claude-file-recovery).
+
 ## Overview
 
 Reconstruct file edit history from OpenClaw session logs as git commits, with deterministic commit hashes for reproducibility.
@@ -9,12 +11,14 @@ Reconstruct file edit history from OpenClaw session logs as git commits, with de
 **Every character from every write/edit operation must be captured, no matter what.**
 
 Even if:
-- The edit can't find its target text → append to end with ⚠️ warning
+- The edit can't find its target text → append to end (with 3 blank lines separator)
 - The path collides with an existing directory → replace directory with file (old content preserved in history)
 - The path uses weird encoding (`_../`) → still write it
 - The operation seems nonsensical → capture it anyway
 
 The goal is a complete record. Nonsense can be fixed in subsequent commits; lost data cannot be recovered.
+
+**Note:** When appending due to failed edit match, do NOT insert comments — just 3 blank lines before the appended text. Comments aren't safe across all file formats. The commit message explains what happened.
 
 ## Safety: Protecting .git
 
@@ -52,6 +56,24 @@ If any of these conditions are not met, the tool exits with an error. There is n
 - All paths are resolved to their real (non-symlink) paths before processing
 - This affects: inside/outside repo determination, `.git` protection checks, `_../` path calculation
 
+## Path Filtering
+
+### Include/Exclude Lists (Glob Patterns)
+
+**`--include <glob>`** (can be specified multiple times):
+- Only include files matching these patterns
+- Default: include all files
+- Examples: `--include "crates/gravity/**"` `--include "*.rs"`
+
+**`--exclude <glob>`** (can be specified multiple times):
+- Exclude files matching these patterns (applied after include)
+- Default: no exclusions
+- Examples: `--exclude "*.log"` `--exclude "**/test_*"`
+
+**`--ignore-external`**:
+- Shorthand for excluding all files outside the repository
+- Equivalent to only including files that resolve inside the repo
+
 ### Path Handling
 
 Split all file operations into two categories:
@@ -73,15 +95,44 @@ Relative path from repo to file: ../../x/file.txt
 Mapped path in repo:             /a/b/c/d/_../_../x/file.txt
 ```
 
-**Why `_../` instead of `../`:**
-- `../` is not a valid path component (would escape repo)
-- `_../` is a legal directory name that symbolically represents "up"
-- Produces consistent, deterministic paths across sessions
-- The relative structure is preserved and visible
+## Automatic Session Discovery
 
-**`--ignore-external` flag:**
-- When set, completely ignore all files outside the current repository
-- Useful when recovering only in-repo changes from sessions that also touched external files
+**`--scan-sessions`**:
+- Instead of specifying session files explicitly, scan the OpenClaw sessions directory
+- Find sessions that contain operations matching the include patterns
+- Append matching sessions to the recovery list
+
+**`--sessions-dir <path>`**:
+- Directory to scan for sessions
+- Default: `~/.openclaw/agents/main/sessions/`
+
+**`--since <timestamp>`** and **`--until <timestamp>`**:
+- Only include sessions with activity within this time range
+- Default `--since`: now minus 64×64×16×16 seconds (≈ 1,193 days / ~3.3 years)
+- Default `--until`: now
+- Format: ISO 8601 or relative (e.g., "7d", "24h", "2026-02-01")
+
+## Commit Collapsing
+
+**`--collapse` (default: enabled)**:
+Collapse consecutive operations into a single commit when ALL of the following are true:
+
+1. Operations are **additive only** — no deletions (edits that only add lines, writes that don't replace)
+2. No interleaved **user messages** between them
+3. No interleaved **tool calls** other than safe read-only operations:
+   - `read`, `Read`
+   - `web_search`, `web_fetch`
+   - `grep`, `find`, `ls`, `cat`, `head`, `tail`
+   - (any tool that can't execute external commands or write data)
+
+This reduces commit count without losing any states that were actually observed/used by the agent.
+
+**`--no-collapse`**: Disable collapsing, create one commit per operation.
+
+Collapsed commits have message format:
+```
+[N ops] write/edit: path/to/file.rs
+```
 
 ## Operations
 
@@ -92,8 +143,8 @@ Mapped path in repo:             /a/b/c/d/_../_../x/file.txt
 ### Edit
 - Use OpenClaw's existing edit resolution logic where it works
 - If exact match fails: apply best-effort matching (fuzzy, whitespace normalization, etc.)
-- If all matching fails: append `new_text` to end of file to ensure full preservation
-- Failed matches: commit message prefixed with ⚠️ and explanation
+- If all matching fails: append `new_text` to end of file (preceded by 3 blank lines)
+- Failed matches: commit message prefixed with ⚠️
 
 ### Read
 - Creates a "context commit" if the file is written/edited anywhere in the transcript (even later)
@@ -133,9 +184,12 @@ write: path/to/file.rs
 edit: path/to/file.rs
 ```
 ```
-⚠️ edit (fuzzy): path/to/file.rs
+⚠️ edit (appended): path/to/file.rs
+```
 
-Warning: Exact match failed, applied best-effort replacement.
+**Collapsed operations:**
+```
+[5 ops] write/edit: path/to/file.rs
 ```
 
 No model or timestamp in message body — already in author/date.
@@ -199,7 +253,8 @@ Claude Opus 4.5 <noreply@anthropic.com>
 ## Final State
 
 Leave repository in uncommitted merge state:
-- Merge strategy: prefer recovery branch versions on conflicts
+- Merge strategy: keep current tree (like `git merge -s ours`), just incorporate history
+- The recovery branch may have corrupted final state from failed edits, but the history is valuable
 - Draft merge commit message:
 
 **Single session:**
@@ -217,14 +272,61 @@ Merge recovered OpenClaw sessions <id1>, <id2>, and <id3>
 Merge recovered OpenClaw session <id> (partial recovery with errors)
 ```
 
-## CLI Flags
+## CLI Flags Summary
 
-- `--ignore-external`: Skip all files outside the current repository
-- `--branch <name>`: Explicit branch name (otherwise derived from first session id)
-- `--dry-run`: Show what would be done without making changes
-- `--verbose`: Detailed output
-- `--list-only`: Just list operations, don't create commits
-- `--filter <prefix>`: Only include files matching path prefix
+The tool always outputs a summary of all parameters:
+
+```
+session-recovery v0.1.0
+━━━━━━━━━━━━━━━━━━━━━━━
+Repository:      /path/to/repo (default: .)
+Branch:          recovered-abc123 (default: derived from first session)
+Sessions:        3 files (or: scanning ~/.openclaw/agents/main/sessions/)
+Include:         ["crates/gravity/**"] (default: all)
+Exclude:         [] (default: none)
+Ignore external: yes (default: no)
+Time range:      2023-01-01 to 2026-02-28 (default: last ~3.3 years)
+Collapse:        yes (default: yes)
+Dry run:         no
+
+Found 1023 operations in 5 sessions...
+```
+
+### Full Flag List
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `<sessions...>` | Session .jsonl files to recover | (required unless --scan-sessions) |
+| `--repo <path>` | Target repository | `.` |
+| `--branch <name>` | Recovery branch name | `recovered-<first-session-id>` |
+| `--include <glob>` | Include files matching pattern | all |
+| `--exclude <glob>` | Exclude files matching pattern | none |
+| `--ignore-external` | Skip files outside repo | no |
+| `--scan-sessions` | Auto-discover sessions | no |
+| `--sessions-dir <path>` | Directory to scan | `~/.openclaw/agents/main/sessions/` |
+| `--since <time>` | Start of time range | ~3.3 years ago |
+| `--until <time>` | End of time range | now |
+| `--collapse` / `--no-collapse` | Collapse additive operations | yes |
+| `--dry-run` | Show what would be done | no |
+| `--list-only` | List operations without committing | no |
+| `--verbose` | Detailed output | no |
+
+## Standalone Repository Creation
+
+To create a standalone repository with just the recovery history:
+
+1. Create new empty repo with single empty initial commit
+2. Run recovery with appropriate filters
+3. Commit the merge
+4. Result: clean repo with just the recovered file history
+
+Example for recovering session-recovery's own history:
+```bash
+mkdir session-recovery-standalone && cd session-recovery-standalone
+git init && git commit --allow-empty -m "Initial commit"
+session-recovery --scan-sessions --include "crates/session-recovery/**" --ignore-external
+git commit  # Accept the merge
+```
 
 ## Future Considerations
 
