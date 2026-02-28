@@ -488,11 +488,13 @@ fn main() -> Result<()> {
     let repo = Repository::open(&repo_path)
         .with_context(|| format!("Failed to open repository: {}", repo_path.display()))?;
 
+    // Branch name: use explicit name, or derive deterministically from session filename
     let branch_name = args.branch.unwrap_or_else(|| {
-        format!(
-            "recovered-{}",
-            chrono::Utc::now().format("%Y%m%d-%H%M%S")
-        )
+        let session_stem = args.session
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        format!("recovered-{}", session_stem)
     });
 
     eprintln!("Creating branch: {}", branch_name);
