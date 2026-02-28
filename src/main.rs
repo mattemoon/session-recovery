@@ -71,11 +71,11 @@ struct Args {
     #[arg(long)]
     no_collapse: bool,
 
-    /// Dry run - show what would be done
-    #[arg(long)]
-    dry_run: bool,
+    /// Actually apply the recovery (default: preview only)
+    #[arg(long, visible_alias = "yes")]
+    confirm: bool,
 
-    /// List operations only
+    /// List operations only (detailed preview)
     #[arg(long)]
     list_only: bool,
 
@@ -424,7 +424,7 @@ fn print_summary(args: &Args, sessions: &[PathBuf], includes: &[Pattern], exclud
     eprintln!("Time range:      {} to {}", since.format("%Y-%m-%d"), until.format("%Y-%m-%d"));
     eprintln!("Collapse:        {}", if args.no_collapse { "no" } else { "yes" });
     if args.at.is_some() { eprintln!("Point-in-time:   {}", args.at.as_ref().unwrap()); }
-    eprintln!("Dry run:         {}", if args.dry_run { "yes" } else { "no" });
+    eprintln!("Mode:            {}", if args.confirm { "APPLY" } else { "preview (use --confirm to apply)" });
     eprintln!();
 }
 
@@ -522,8 +522,11 @@ fn main() -> Result<()> {
         return Ok(());
     }
     
-    if args.dry_run {
-        eprintln!("DRY RUN: would create ~{} commits", file_ops);
+    if !args.confirm {
+        eprintln!();
+        eprintln!("Preview complete. {} file operations would create ~{} commits.", file_ops, file_ops);
+        eprintln!();
+        eprintln!("To apply this recovery, run again with --confirm");
         return Ok(());
     }
     
