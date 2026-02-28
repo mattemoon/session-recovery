@@ -14,16 +14,30 @@ Reconstruct file edit history from OpenClaw session logs as git commits, with de
 
 ### Path Handling
 
+Split all file operations into two categories:
+
 **Inside repository:**
-- Resolve directly, paths are unambiguous
-- This is the common case and requires no remapping
+- Resolve directly to repo-relative path
+- Always takes priority, never affected by external paths
 
 **Outside repository:**
-- Find common root of: all session `cwd` values + all write/edit paths across all transcripts
-- If common root is inside the repo: use paths directly (no ambiguity)
-- If common root is outside the repo: remap to `unknown/<common-prefix-stripped-path>`
-- The `unknown/` prefix is fixed (not session-id) for simplicity and determinism across multi-session recovery
-- Files here are expected to be moved by a human in a subsequent commit
+- Construct a symbolic path using `_../` components to represent the relative path
+- This encodes the relationship to the repo root in a valid, deterministic path
+
+**Example:**
+```
+Repo at:     /a/b/c/d
+External:    /a/b/x/file.txt
+
+Relative path from repo to file: ../../x/file.txt
+Mapped path in repo:             /a/b/c/d/_../_../x/file.txt
+```
+
+**Why `_../` instead of `../`:**
+- `../` is not a valid path component (would escape repo)
+- `_../` is a legal directory name that symbolically represents "up"
+- Produces consistent, deterministic paths across sessions
+- The relative structure is preserved and visible
 
 **`--ignore-external` flag:**
 - When set, completely ignore all files outside the current repository
