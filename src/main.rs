@@ -90,23 +90,63 @@ fn parse_timestamp(s: &str) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-fn model_to_author(model: &str) -> (&str, &str) {
+/// Convert model ID to git author.
+/// Returns (name, email) where email is always noreply@anthropic.com for determinism.
+fn model_to_author(model: &str) -> (String, &'static str) {
+    const EMAIL: &str = "noreply@anthropic.com";
+    
+    // Extract a clean model name for the author
+    // e.g., "claude-opus-4-5" -> "Claude Opus 4.5"
+    //       "anthropic/claude-sonnet-4" -> "Claude Sonnet 4"
     let model_lower = model.to_lowercase();
-    if model_lower.contains("opus") {
-        ("Claude Opus", "opus@anthropic.com")
+    
+    let name = if model_lower.contains("opus") {
+        format_model_name(model, "Opus")
     } else if model_lower.contains("sonnet") {
-        ("Claude Sonnet", "sonnet@anthropic.com")
+        format_model_name(model, "Sonnet")
     } else if model_lower.contains("haiku") {
-        ("Claude Haiku", "haiku@anthropic.com")
+        format_model_name(model, "Haiku")
     } else if model_lower.contains("claude") {
-        ("Claude", "claude@anthropic.com")
+        "Claude".to_string()
     } else if model_lower.contains("gpt-4") {
-        ("GPT-4", "gpt4@openai.com")
+        "GPT-4".to_string()
     } else if model_lower.contains("gpt") {
-        ("GPT", "gpt@openai.com")
+        "GPT".to_string()
     } else {
-        ("AI Assistant", "ai@unknown.local")
-    }
+        model.to_string() // Use raw model ID as fallback
+    };
+    
+    (name, EMAIL)
+}
+
+/// Format model name nicely, extracting version if present.
+/// e.g., "claude-opus-4-5" -> "Claude Opus 4.5"
+fn format_model_name(model: &str, variant: &str) -> String {
+    // Try to extract version number
+    let model_lower = model.to_lowercase();
+    
+    // Look for patterns like "4-5", "4.5", "4"
+    let version = if let Some(idx) = model_lower.find(variant.to_lowercase().as_str()) {
+        let after_variant = &model_lower[idx + variant.len()..];
+        // Extract digits and separators
+        let version_part: String = after_variant
+            .chars()
+            .skip_while(|c| *c == '-' || *c == '_' || *c == '/')
+            .take_while(|c| c.is_ascii_digit() || *c == '-' || *c == '.' || *c == '_')
+            .collect();
+        
+        if !version_part.is_empty() {
+            // Convert "4-5" to "4.5"
+            let cleaned = version_part.replace('-', ".").replace('_', ".");
+            format!(" {}", cleaned)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    
+    format!("Claude {}{}", variant, version)
 }
 
 fn extract_operations(
