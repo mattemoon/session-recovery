@@ -522,8 +522,11 @@ fn main() -> Result<()> {
         return Ok(());
     }
     
-    if args.dry_run {
-        eprintln!("DRY RUN: would create ~{} commits", file_ops);
+    if !args.confirm {
+        eprintln!();
+        eprintln!("Preview complete. {} file operations would create ~{} commits.", file_ops, file_ops);
+        eprintln!();
+        eprintln!("To apply this recovery, run again with --confirm");
         return Ok(());
     }
     
