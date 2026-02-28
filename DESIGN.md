@@ -354,15 +354,12 @@ git commit  # Accept the merge
 
 ## Future Scope
 
-### Confirmation Mode (Idea)
-Consider changing the default behavior:
-- By default, just show what would be recovered (like `--dry-run` but more detailed)
-- Emit full log with file paths, operation counts, timestamps, etc.
-- Require `--confirm` or `--yes` flag to actually apply changes
-- This makes the tool safer for exploration — you can run it freely to see what's available without risk
-
-Alternative: subcommands like `session-recovery scan ...` vs `session-recovery apply ...`
-But a simple `--confirm` flag is probably cleaner.
+### Confirmation Mode (Implemented)
+The default behavior is preview-only:
+- By default, shows what would be recovered without making any changes
+- Displays session info, operation counts, file paths
+- Requires `--confirm` or `--yes` flag to actually apply changes
+- This makes the tool safe for exploration — run freely to see what's available
 
 ### Claude Code and Other Agents
 This tool is designed for OpenClaw session logs, but the architecture should eventually support:
