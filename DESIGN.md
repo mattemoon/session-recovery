@@ -26,13 +26,31 @@ Any path with `.git` in it gets that component prefixed with `_`:
 
 This ensures recovery operations cannot corrupt the repository itself.
 
+## Prerequisites
+
+**Clean repository state required.** Before running, the tool verifies:
+- No uncommitted changes in working tree
+- No staged changes in index
+- No in-progress rebase, merge, cherry-pick, etc.
+
+If any of these conditions are not met, the tool exits with an error. There is no override flag — a clean state is strictly required.
+
 ## Core Principles
 
 ### Determinism
 - Same input → same commit hashes
 - Author and committer both derived from model (not git config)
-- Timestamps from session log only (no fallbacks to current time)
+- Timestamps from session log only — **missing timestamps are a fatal error** (logs should always have them)
 - Timezone from log if present, otherwise UTC
+
+### Idempotency
+- Running recovery twice produces the same orphan/recovery commits (identical hashes)
+- A new merge commit is created each time (this is expected and desired)
+- The recovery branch can be safely re-created without affecting existing merges
+
+### Symlink Resolution
+- All paths are resolved to their real (non-symlink) paths before processing
+- This affects: inside/outside repo determination, `.git` protection checks, `_../` path calculation
 
 ### Path Handling
 
@@ -69,18 +87,36 @@ Mapped path in repo:             /a/b/c/d/_../_../x/file.txt
 
 ### Write
 - Full file content, straightforward
-- If path is currently a directory: delete directory, create file (directory contents preserved in git history)
+- If path is currently a directory: delete directory contents, create file (old contents preserved in git history)
 
 ### Edit
-- Try exact match first
-- If no match: fuzzy matching, whitespace normalization, etc.
-- Worst case: append to end of file
+- Use OpenClaw's existing edit resolution logic where it works
+- If exact match fails: apply best-effort matching (fuzzy, whitespace normalization, etc.)
+- If all matching fails: append `new_text` to end of file to ensure full preservation
 - Failed matches: commit message prefixed with ⚠️ and explanation
 
 ### Read
-- If the file is written/edited anywhere in the transcript (even later), create a commit from read contents
-- Only if it would actually change the file state
-- Provides context that may help resolve later edits
+- Creates a "context commit" if the file is written/edited anywhere in the transcript (even later)
+- Only if it would actually change the current file state in the recovery branch
+- Provides baseline content that may help resolve later edits more accurately
+
+## Error Handling
+
+### Malformed Log Lines
+- Skip invalid/unparseable lines
+- Batch consecutive skipped lines into a single warning commit
+- Warning commit message: "⚠️ Skipped N malformed lines"
+- Timestamp: average of the timestamps immediately before and after the skipped section
+- Final merge commit message notes "partial recovery with errors" if any lines were skipped
+
+### Empty Recovery
+- If recovery would produce only empty/warning commits with no actual file operations: 
+- Do NOT create a merge commit
+- Exit with error: "No data to recover from session(s)"
+
+### Missing Timestamps
+- Fatal error — logs should always have timestamps
+- Do not fall back to current time or other heuristics
 
 ## Commit Messages
 
@@ -103,6 +139,11 @@ Warning: Exact match failed, applied best-effort replacement.
 ```
 
 No model or timestamp in message body — already in author/date.
+
+**Skipped lines:**
+```
+⚠️ Skipped 3 malformed lines
+```
 
 **Final commit (per session):**
 ```
@@ -171,6 +212,11 @@ Merge recovered OpenClaw session <id>
 Merge recovered OpenClaw sessions <id1>, <id2>, and <id3>
 ```
 
+**If errors occurred:**
+```
+Merge recovered OpenClaw session <id> (partial recovery with errors)
+```
+
 ## CLI Flags
 
 - `--ignore-external`: Skip all files outside the current repository
@@ -184,5 +230,5 @@ Merge recovered OpenClaw sessions <id1>, <id2>, and <id3>
 
 - Non-Anthropic model identification
 - Integrate with `save` crate author conventions
-- Better fuzzy matching for edits
+- Better fuzzy matching strategies (explicit priority order for determinism)
 - Handle file deletions if detectable from exec calls
