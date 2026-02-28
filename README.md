@@ -4,22 +4,15 @@ Recover file history from OpenClaw session logs as git commits.
 
 Inspired by [claude-file-recovery](https://github.com/hjtenklooster/claude-file-recovery).
 
-## Overview
+## What It Does
 
-When you work with AI coding assistants like Claude through OpenClaw, every file operation (write, edit) is logged in session files. This tool extracts those operations and reconstructs them as a git branch with:
+When you work with AI coding assistants like Claude through OpenClaw, every file operation (write, edit) is logged. This tool extracts those operations and reconstructs them as git commits with:
 
 - **Proper timestamps** from the session log
-- **Author attribution** based on the AI model used
-- **Deterministic commits** — same inputs always produce same commit hashes
-- **Full history** of how files evolved during a session
+- **Author attribution** based on the AI model
+- **Full history** of how files evolved
 
 ## Installation
-
-```bash
-cargo install --path crates/session-recovery
-```
-
-Or build from the jeb monorepo:
 
 ```bash
 cargo build --release -p session-recovery
@@ -27,90 +20,94 @@ cargo build --release -p session-recovery
 
 ## Quick Start
 
+**Preview what would be recovered** (safe, no changes made):
 ```bash
-# Recover all operations from a specific session
-session-recovery ~/.openclaw/agents/main/sessions/abc123.jsonl
-
-# Auto-discover sessions that touched specific files
 session-recovery --scan-sessions --include "**/my-project/**"
-
-# Point-in-time recovery: get a file as it was at a specific time
-session-recovery --at "src/main.rs@2026-02-20T07:30:00Z"
-
-# Recover only files inside the current repo
-session-recovery --scan-sessions --include "**/*.rs" --ignore-external
 ```
 
-## Features
-
-### Path Filtering
-
+**Actually apply the recovery** (requires `--confirm`):
 ```bash
---include <glob>      # Only include files matching pattern (repeatable)
---exclude <glob>      # Exclude files matching pattern (repeatable)
---ignore-external     # Skip files outside the repository
+session-recovery --scan-sessions --include "**/my-project/**" --confirm
 ```
 
-### Automatic Session Discovery
+## Usage
+
+### Basic Recovery
 
 ```bash
---scan-sessions       # Find sessions automatically
---sessions-dir <path> # Where to look (default: ~/.openclaw/agents/main/sessions/)
---since <time>        # Only sessions after this time
---until <time>        # Only sessions before this time
+# Preview recovery from a specific session
+session-recovery path/to/session.jsonl
+
+# Apply it
+session-recovery path/to/session.jsonl --confirm
+```
+
+### Auto-Discover Sessions
+
+```bash
+# Find and preview all sessions touching certain files
+session-recovery --scan-sessions --include "**/src/**"
+
+# Apply
+session-recovery --scan-sessions --include "**/src/**" --confirm
+```
+
+### Filter Files
+
+```bash
+# Only recover Rust files inside the repo
+session-recovery --scan-sessions --include "**/*.rs" --ignore-external --confirm
+
+# Exclude test files
+session-recovery --scan-sessions --exclude "**/test_*" --confirm
 ```
 
 ### Point-in-Time Recovery
 
+Recover a specific file as it was at a specific time:
+
 ```bash
---at <path>@<timestamp>  # Recover file to specific point in time
---lookback <duration>    # How far back to search (default: 14d)
+# Preview
+session-recovery --at "src/main.rs@2026-02-20T07:30:00Z"
+
+# Apply
+session-recovery --at "src/main.rs@2026-02-20T07:30:00Z" --confirm
 ```
 
-### Commit Collapsing
+### Time Range
 
-By default, consecutive additive operations (no deletions) without user interaction are collapsed into single commits. Disable with `--no-collapse`.
+```bash
+# Only sessions from the last week
+session-recovery --scan-sessions --since "2026-02-21" --confirm
+
+# Sessions between specific dates
+session-recovery --scan-sessions --since "2026-02-01" --until "2026-02-15" --confirm
+```
 
 ## How It Works
 
-1. **Extract** — Parse session .jsonl files for write/edit operations
-2. **Filter** — Apply include/exclude patterns
-3. **Order** — Sort operations chronologically (interleaving multiple sessions)
-4. **Commit** — Create git commits for each operation
-5. **Merge** — Leave repo in uncommitted merge state for review
+1. **Preview** — By default, shows what would be recovered without making changes
+2. **Confirm** — With `--confirm`, creates a recovery branch with commits for each operation
+3. **Merge** — Leaves repo in uncommitted merge state so you can review before committing
 
-### Session Markers
+### What Gets Created
 
-Each session creates orphan commits as markers:
-- "Beginning recovery from OpenClaw session <id>"
-- "Completing recovery from OpenClaw session <id>"
+- **Recovery branch** — Contains one commit per file operation
+- **Session markers** — "Beginning recovery" and "Completing recovery" commits
+- **Merge commit** — Combines recovery history with your current branch
 
-This ensures the same initial commit hash exists across all recoveries of that session.
+### Handling External Files
+
+Files outside the repo are mapped using `_../` encoding:
+```
+/other/path/file.txt → _../_../other/path/file.txt
+```
+
+Use `--ignore-external` to skip external files entirely.
 
 ### Failed Edits
 
-When an edit can't find its target text, the new content is appended to the file (with 3 blank lines separator) and the commit message is prefixed with ⚠️.
-
-### External Files
-
-Files outside the repository are mapped using `_../` encoding:
-```
-/other/project/file.txt → _../other/project/file.txt
-```
-
-## Example: Recovering Your Own Tool's History
-
-```bash
-# Create standalone repo with just this tool's history
-mkdir session-recovery-standalone && cd session-recovery-standalone
-git init && git commit --allow-empty -m "Initial"
-
-# Recover the tool's development history
-session-recovery --scan-sessions --include "**/session-recovery/**" --ignore-external
-
-# Complete the merge
-git commit
-```
+When an edit can't find its target text, the content is appended to the file (with blank line separator) and the commit message is prefixed with ⚠️.
 
 ## CLI Reference
 
@@ -118,25 +115,55 @@ git commit
 session-recovery [OPTIONS] [SESSIONS...]
 
 Arguments:
-  [SESSIONS...]  Session .jsonl files (optional if --scan-sessions or --at)
+  [SESSIONS...]              Session .jsonl files (optional if --scan-sessions)
 
 Options:
-      --repo <PATH>         Target repository [default: .]
-      --branch <NAME>       Recovery branch name
-      --include <GLOB>      Include files matching pattern
-      --exclude <GLOB>      Exclude files matching pattern
-      --ignore-external     Skip files outside repo
-      --scan-sessions       Auto-discover sessions
-      --sessions-dir <PATH> Session directory [default: ~/.openclaw/agents/main/sessions/]
-      --since <TIME>        Start of time range
-      --until <TIME>        End of time range
-      --at <PATH@TIME>      Point-in-time recovery
-      --lookback <DUR>      Lookback for --at [default: 14d]
-      --no-collapse         Don't collapse commits
-      --dry-run             Show what would be done
-      --list-only           List operations only
-  -v, --verbose             Verbose output
-  -h, --help                Print help
+      --repo <PATH>          Target repository [default: .]
+      --branch <NAME>        Recovery branch name
+      --include <GLOB>       Include files matching pattern (repeatable)
+      --exclude <GLOB>       Exclude files matching pattern (repeatable)
+      --ignore-external      Skip files outside repo
+      --scan-sessions        Auto-discover sessions
+      --sessions-dir <PATH>  Session directory [default: ~/.openclaw/agents/main/sessions/]
+      --since <TIME>         Start of time range
+      --until <TIME>         End of time range
+      --at <PATH@TIME>       Point-in-time recovery
+      --lookback <DUR>       Lookback for --at [default: 14d]
+      --no-collapse          Don't collapse consecutive commits
+      --confirm, --yes       Actually apply the recovery
+      --list-only            Show detailed operation list
+  -v, --verbose              Verbose output
+  -h, --help                 Print help
+```
+
+## Examples
+
+### Recover a Project's Full History
+
+```bash
+# Preview
+session-recovery --scan-sessions --include "**/my-project/**" --ignore-external
+
+# Apply
+session-recovery --scan-sessions --include "**/my-project/**" --ignore-external --confirm
+git commit  # Complete the merge
+```
+
+### Create Standalone Repo
+
+```bash
+mkdir my-project-history && cd my-project-history
+git init && git commit --allow-empty -m "Initial"
+
+session-recovery --scan-sessions --include "**/my-project/**" --ignore-external --confirm
+git commit
+```
+
+### Recover File at Specific Time
+
+```bash
+session-recovery --at "src/lib.rs@2026-02-20T14:00:00Z" --ignore-external --confirm
+git commit
 ```
 
 ## Design
