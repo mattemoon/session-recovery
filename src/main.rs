@@ -450,9 +450,11 @@ fn main() -> Result<()> {
         repo.set_head(&format!("refs/heads/{}", repo.head()?.shorthand().unwrap_or("main")))?;
         repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
         
-        // Merge with prefer-theirs (recovery branch)
+        // Merge with prefer-ours (keep current files, just add recovery history)
+        // The recovery branch may have corrupted state from failed edits,
+        // but the history is valuable. We keep our current files.
         let mut opts = git2::MergeOptions::new();
-        opts.file_favor(git2::FileFavor::Theirs);
+        opts.file_favor(git2::FileFavor::Ours);
         repo.merge(&[&ann], Some(&mut opts), None)?;
         
         // Prepare merge message
