@@ -176,11 +176,10 @@ fn extract_operations(
             None => continue,
         };
 
-        let timestamp = entry
-            .timestamp
-            .as_deref()
-            .and_then(parse_timestamp)
-            .unwrap_or_else(Utc::now);
+        let timestamp = match entry.timestamp.as_deref().and_then(parse_timestamp) {
+            Some(ts) => ts,
+            None => continue, // Skip entries without valid timestamps for determinism
+        };
 
         for block in content_arr {
             let call: ToolCall = match serde_json::from_value(block.clone()) {
