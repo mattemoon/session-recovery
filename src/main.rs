@@ -431,8 +431,8 @@ fn replay_operations(
         // For determinism: author AND committer both from model, same timestamp
         let (author_name, author_email) = model_to_author(&op.model);
         let git_time = Time::new(op.timestamp.timestamp(), 0); // UTC offset = 0
-        let author = Signature::new(author_name, author_email, &git_time)?;
-        let committer = Signature::new(author_name, author_email, &git_time)?;
+        let author = Signature::new(&author_name, author_email, &git_time)?;
+        let committer = Signature::new(&author_name, author_email, &git_time)?;
 
         let op_name = match &op.op_type {
             OpType::Write { .. } => "write",
