@@ -450,12 +450,15 @@ fn main() -> Result<()> {
         repo.set_head(&format!("refs/heads/{}", repo.head()?.shorthand().unwrap_or("main")))?;
         repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
         
-        // Merge with prefer-ours (keep current files, just add recovery history)
-        // The recovery branch may have corrupted state from failed edits,
-        // but the history is valuable. We keep our current files.
-        let mut opts = git2::MergeOptions::new();
-        opts.file_favor(git2::FileFavor::Ours);
-        repo.merge(&[&ann], Some(&mut opts), None)?;
+        // Merge with "ours" strategy: keep our tree exactly, just incorporate history
+        // The recovery branch may have accumulated errors from failed edits,
+        // but the history is valuable. This is like `git merge -s ours`.
+        repo.merge(&[&ann], None, None)?;
+        
+        // Resolve by keeping our version of everything
+        let our_commit = repo.find_commit(orig_head.unwrap())?;
+        let our_tree = our_commit.tree()?;
+        repo.checkout_tree(our_tree.as_object(), Some(git2::build::CheckoutBuilder::new().force()))?;
         
         // Prepare merge message
         let slist = if session_ids.len() == 1 { 
