@@ -424,7 +424,7 @@ fn print_summary(args: &Args, sessions: &[PathBuf], includes: &[Pattern], exclud
     eprintln!("Time range:      {} to {}", since.format("%Y-%m-%d"), until.format("%Y-%m-%d"));
     eprintln!("Collapse:        {}", if args.no_collapse { "no" } else { "yes" });
     if args.at.is_some() { eprintln!("Point-in-time:   {}", args.at.as_ref().unwrap()); }
-    eprintln!("Dry run:         {}", if args.dry_run { "yes" } else { "no" });
+    eprintln!("Mode:            {}", if args.confirm { "APPLY" } else { "preview (use --confirm to apply)" });
     eprintln!();
 }
 
