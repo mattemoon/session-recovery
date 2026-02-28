@@ -315,18 +315,13 @@ fn replay_operations(
     let empty_tree = repo.find_tree(empty_tree_id)?;
 
     // Create initial commit
+    // For determinism: author AND committer are both derived from model
+    // This ensures identical commit hashes when re-run
     let (author_name, author_email) = model_to_author(primary_model);
-    let git_time = Time::new(first_timestamp.timestamp(), 0);
+    let git_time = Time::new(first_timestamp.timestamp(), 0); // UTC offset = 0
     let author = Signature::new(author_name, author_email, &git_time)?;
-
-    let config = repo.config()?;
-    let committer_name = config
-        .get_string("user.name")
-        .unwrap_or_else(|_| "OpenClaw Reconstructor".to_string());
-    let committer_email = config
-        .get_string("user.email")
-        .unwrap_or_else(|_| "reconstruct@openclaw.local".to_string());
-    let committer = Signature::new(&committer_name, &committer_email, &git_time)?;
+    // Committer = Author for determinism (not from git config)
+    let committer = Signature::new(author_name, author_email, &git_time)?;
 
     let initial_message = format!(
         "Initial commit (session start)\n\nReconstructed from OpenClaw session log\nSession started: {}\nPrimary model: {}",
