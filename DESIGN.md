@@ -69,6 +69,7 @@ Mapped path in repo:             /a/b/c/d/_../_../x/file.txt
 
 ### Write
 - Full file content, straightforward
+- If path is currently a directory: delete directory, create file (directory contents preserved in git history)
 
 ### Edit
 - Try exact match first
