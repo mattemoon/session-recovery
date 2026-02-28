@@ -176,11 +176,10 @@ fn extract_operations(
             None => continue,
         };
 
-        let timestamp = entry
-            .timestamp
-            .as_deref()
-            .and_then(parse_timestamp)
-            .unwrap_or_else(Utc::now);
+        let timestamp = match entry.timestamp.as_deref().and_then(parse_timestamp) {
+            Some(ts) => ts,
+            None => continue, // Skip entries without valid timestamps for determinism
+        };
 
         for block in content_arr {
             let call: ToolCall = match serde_json::from_value(block.clone()) {
@@ -459,7 +458,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let first_ts = first_timestamp.unwrap_or_else(Utc::now);
+    let first_ts = match first_timestamp {
+        Some(ts) => ts,
+        None => anyhow::bail!("No valid timestamp found in session log — cannot create deterministic commits"),
+    };
     eprintln!("First timestamp: {}", first_ts);
     eprintln!("Primary model: {}", primary_model);
 
@@ -486,11 +488,13 @@ fn main() -> Result<()> {
     let repo = Repository::open(&repo_path)
         .with_context(|| format!("Failed to open repository: {}", repo_path.display()))?;
 
+    // Branch name: use explicit name, or derive deterministically from session filename
     let branch_name = args.branch.unwrap_or_else(|| {
-        format!(
-            "recovered-{}",
-            chrono::Utc::now().format("%Y%m%d-%H%M%S")
-        )
+        let session_stem = args.session
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        format!("recovered-{}", session_stem)
     });
 
     eprintln!("Creating branch: {}", branch_name);
