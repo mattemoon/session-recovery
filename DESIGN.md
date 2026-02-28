@@ -4,6 +4,28 @@
 
 Reconstruct file edit history from OpenClaw session logs as git commits, with deterministic commit hashes for reproducibility.
 
+## Guiding Principle: Capture Everything
+
+**Every character from every write/edit operation must be captured, no matter what.**
+
+Even if:
+- The edit can't find its target text → append to end with ⚠️ warning
+- The path collides with an existing directory → replace directory with file (old content preserved in history)
+- The path uses weird encoding (`_../`) → still write it
+- The operation seems nonsensical → capture it anyway
+
+The goal is a complete record. Nonsense can be fixed in subsequent commits; lost data cannot be recovered.
+
+## Safety: Protecting .git
+
+**Never write to any path containing `.git` as a component.**
+
+Any path with `.git` in it gets that component prefixed with `_`:
+- `.git/config` → `_.git/config`  
+- `foo/.git/hooks/pre-commit` → `foo/_.git/hooks/pre-commit`
+
+This ensures recovery operations cannot corrupt the repository itself.
+
 ## Core Principles
 
 ### Determinism
