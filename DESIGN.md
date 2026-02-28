@@ -112,6 +112,28 @@ Mapped path in repo:             /a/b/c/d/_../_../x/file.txt
 - Default `--until`: now
 - Format: ISO 8601 or relative (e.g., "7d", "24h", "2026-02-01")
 
+## Point-in-Time Recovery
+
+**`--at <path>@<timestamp>`**:
+- Recover a specific file to a specific point in time
+- Finds all sessions that touched `<path>` within the lookback window (default: 14 days before the timestamp)
+- Replays operations up to and including the specified timestamp
+- Stops there — does not include any operations after that time
+- Timestamp format: ISO 8601, or git-style relative dates (e.g., "2 days ago", "yesterday 3pm")
+
+**`--lookback <duration>`**:
+- How far back to search for sessions when using `--at`
+- Default: 14 days
+- Format: "14d", "2w", "24h", etc.
+
+**Example:**
+```bash
+# Recover gravity/src/main.rs as it was on Feb 20 at 2:30 AM
+session-recovery --at "crates/gravity/src/main.rs@2026-02-20T07:30:00Z" --ignore-external
+```
+
+This is the common case: "I want the version of this file that existed at timestamp X, along with the history leading up to it."
+
 ## Commit Collapsing
 
 **`--collapse` (default: enabled)**:
@@ -296,7 +318,7 @@ Found 1023 operations in 5 sessions...
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `<sessions...>` | Session .jsonl files to recover | (required unless --scan-sessions) |
+| `<sessions...>` | Session .jsonl files to recover | (optional if --scan-sessions or --at) |
 | `--repo <path>` | Target repository | `.` |
 | `--branch <name>` | Recovery branch name | `recovered-<first-session-id>` |
 | `--include <glob>` | Include files matching pattern | all |
@@ -306,6 +328,8 @@ Found 1023 operations in 5 sessions...
 | `--sessions-dir <path>` | Directory to scan | `~/.openclaw/agents/main/sessions/` |
 | `--since <time>` | Start of time range | ~3.3 years ago |
 | `--until <time>` | End of time range | now |
+| `--at <path>@<time>` | Point-in-time recovery for specific file | (none) |
+| `--lookback <duration>` | Session search window for --at | 14d |
 | `--collapse` / `--no-collapse` | Collapse additive operations | yes |
 | `--dry-run` | Show what would be done | no |
 | `--list-only` | List operations without committing | no |
@@ -328,8 +352,17 @@ session-recovery --scan-sessions --include "crates/session-recovery/**" --ignore
 git commit  # Accept the merge
 ```
 
-## Future Considerations
+## Future Scope
 
+### Claude Code and Other Agents
+This tool is designed for OpenClaw session logs, but the architecture should eventually support:
+- Claude Code (`~/.claude/` session history)
+- Other AI coding agents with similar log formats
+- Generic JSONL transcript format
+
+This is out of scope for the initial implementation. We will continue refining the OpenClaw support first, then consider extending to other formats.
+
+### Additional Future Considerations
 - Non-Anthropic model identification
 - Integrate with `save` crate author conventions
 - Better fuzzy matching strategies (explicit priority order for determinism)
