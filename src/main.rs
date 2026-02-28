@@ -458,7 +458,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let first_ts = first_timestamp.unwrap_or_else(Utc::now);
+    let first_ts = match first_timestamp {
+        Some(ts) => ts,
+        None => anyhow::bail!("No valid timestamp found in session log — cannot create deterministic commits"),
+    };
     eprintln!("First timestamp: {}", first_ts);
     eprintln!("Primary model: {}", primary_model);
 
