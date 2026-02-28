@@ -71,11 +71,11 @@ struct Args {
     #[arg(long)]
     no_collapse: bool,
 
-    /// Dry run - show what would be done
-    #[arg(long)]
-    dry_run: bool,
+    /// Actually apply the recovery (default: preview only)
+    #[arg(long, visible_alias = "yes")]
+    confirm: bool,
 
-    /// List operations only
+    /// List operations only (detailed preview)
     #[arg(long)]
     list_only: bool,
 
