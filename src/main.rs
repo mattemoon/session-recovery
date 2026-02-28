@@ -1,45 +1,42 @@
 //! session-recovery — Recover file history from OpenClaw session logs
 //!
-//! Extracts write/edit/read operations from .jsonl session files and reconstructs
-//! them as a git branch with proper timestamps and authorship.
-//!
 //! See DESIGN.md for full specification.
 
 use anyhow::{bail, Context, Result};
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, Utc};
 use clap::Parser;
-use git2::{Repository, RepositoryState, Signature, Time, Oid, FileMode};
+use git2::{FileMode, Oid, Repository, RepositoryState, Signature, Time};
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet, BTreeMap};
-use std::fs::{self, File};
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf, Component};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "session-recovery")]
 #[command(about = "Recover file history from OpenClaw session logs")]
 struct Args {
-    /// Paths to session .jsonl files (can specify multiple)
+    /// Paths to session .jsonl files
     #[arg(required = true)]
     sessions: Vec<PathBuf>,
 
-    /// Repository path (default: current directory)
+    /// Repository path
     #[arg(long, default_value = ".")]
     repo: PathBuf,
 
-    /// Branch name for reconstructed history
+    /// Branch name
     #[arg(long)]
     branch: Option<String>,
 
-    /// Ignore files outside the current repository
+    /// Ignore external files
     #[arg(long)]
     ignore_external: bool,
 
-    /// Filter to only include files matching this path prefix
+    /// Filter by path prefix
     #[arg(long)]
     filter: Option<String>,
 
-    /// Dry run - show what would be done without making changes
+    /// Dry run
     #[arg(long)]
     dry_run: bool,
 
@@ -47,806 +44,435 @@ struct Args {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Just extract and list operations, don't create git history
+    /// List only
     #[arg(long)]
     list_only: bool,
 }
 
-// ============================================================================
-// Data structures
-// ============================================================================
-
 #[derive(Debug, Clone)]
-struct SessionInfo {
-    id: String,
-    first_timestamp: DateTime<Utc>,
-    last_timestamp: DateTime<Utc>,
-    cwd: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct FileOperation {
-    timestamp: DateTime<Utc>,
-    tz_offset_minutes: i32,
+struct Op {
+    ts: DateTime<Utc>,
+    tz: i32,
     model: String,
-    session_id: String,
-    op_type: OpType,
+    session: String,
+    kind: OpKind,
     path: String,
-    line_number: usize,
 }
 
 #[derive(Debug, Clone)]
-enum OpType {
-    Write { content: String },
-    Edit { old_text: String, new_text: String },
-    Read { content: String },
-    SessionStart,
-    SessionEnd,
-    SkippedLines { count: usize },
+enum OpKind {
+    Write(String),
+    Edit { old: String, new: String },
+    Start,
+    End,
+    Skip(usize),
 }
-
-#[derive(Debug, Clone)]
-enum EditResult {
-    ExactMatch,
-    FuzzyMatch { description: String },
-    Appended,
-}
-
-// ============================================================================
-// Parsing session logs
-// ============================================================================
 
 #[derive(Debug, Deserialize)]
-struct SessionEntry {
+struct Entry {
     #[serde(rename = "type")]
-    entry_type: String,
+    typ: String,
     timestamp: Option<String>,
     #[serde(rename = "modelId")]
     model_id: Option<String>,
-    message: Option<Message>,
+    message: Option<Msg>,
     id: Option<String>,
     cwd: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct Message {
+struct Msg {
     role: Option<String>,
     model: Option<String>,
     content: Option<serde_json::Value>,
-    #[serde(rename = "toolName")]
-    tool_name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ToolCall {
-    #[serde(rename = "type")]
-    call_type: Option<String>,
-    name: Option<String>,
-    arguments: Option<serde_json::Value>,
+fn parse_ts(s: &str) -> Option<(DateTime<Utc>, i32)> {
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| (dt.with_timezone(&Utc), dt.offset().local_minus_utc() / 60))
 }
 
-fn parse_timestamp(s: &str) -> Option<(DateTime<Utc>, i32)> {
-    // Try to parse with timezone info
-    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-        let offset_minutes = dt.offset().local_minus_utc() / 60;
-        return Some((dt.with_timezone(&Utc), offset_minutes));
-    }
-    // Fallback: assume UTC
-    if let Ok(dt) = s.parse::<DateTime<Utc>>() {
-        return Some((dt, 0));
-    }
-    None
-}
+fn extract(path: &Path, filter: Option<&str>, verbose: bool) -> Result<(String, DateTime<Utc>, DateTime<Utc>, Vec<Op>)> {
+    let file = File::open(path).with_context(|| format!("open: {}", path.display()))?;
+    let rdr = BufReader::new(file);
+    
+    let mut ops = Vec::new();
+    let mut model = "unknown".to_string();
+    let mut sid = path.file_stem().and_then(|s| s.to_str()).unwrap_or("x").to_string();
+    let mut first_ts: Option<DateTime<Utc>> = None;
+    let mut last_ts: Option<DateTime<Utc>> = None;
 
-/// Extract session info and all operations from a single session file
-fn extract_session(
-    session_path: &Path,
-    verbose: bool,
-) -> Result<(SessionInfo, Vec<FileOperation>)> {
-    let file = File::open(session_path)
-        .with_context(|| format!("Failed to open session file: {}", session_path.display()))?;
-    let reader = BufReader::new(file);
-
-    let mut operations = Vec::new();
-    let mut current_model = String::from("unknown");
-    let mut session_id = session_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let mut session_cwd: Option<String> = None;
-    let mut first_timestamp: Option<DateTime<Utc>> = None;
-    let mut last_timestamp: Option<DateTime<Utc>> = None;
-    let mut skipped_start: Option<(usize, DateTime<Utc>)> = None;
-    let mut last_good_timestamp: Option<DateTime<Utc>> = None;
-
-    // Track which files are written/edited (for read filtering)
-    let mut written_files: HashSet<String> = HashSet::new();
-    // Store reads to process after we know all written files
-    let mut pending_reads: Vec<(usize, DateTime<Utc>, i32, String, String, String)> = Vec::new();
-
-    for (line_num, line_result) in reader.lines().enumerate() {
-        let line_num = line_num + 1; // 1-indexed
+    for line in rdr.lines().flatten() {
+        if line.trim().is_empty() { continue; }
+        let e: Entry = match serde_json::from_str(&line) { Ok(e) => e, Err(_) => continue };
         
-        let line = match line_result {
-            Ok(l) => l,
-            Err(_) => {
-                // Malformed line - track for batch warning
-                if skipped_start.is_none() {
-                    skipped_start = Some((line_num, last_good_timestamp.unwrap_or_else(Utc::now)));
-                }
-                continue;
-            }
+        let (ts, tz) = match e.timestamp.as_deref().and_then(parse_ts) {
+            Some(t) => t, None => continue
         };
-
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        let entry: SessionEntry = match serde_json::from_str(&line) {
-            Ok(e) => e,
-            Err(_) => {
-                // Malformed JSON - track for batch warning
-                if skipped_start.is_none() {
-                    skipped_start = Some((line_num, last_good_timestamp.unwrap_or_else(Utc::now)));
-                }
-                continue;
-            }
-        };
-
-        // If we were skipping and now have a good line, emit skip warning
-        if let Some((start_line, start_ts)) = skipped_start.take() {
-            let count = line_num - start_line;
-            let (ts, tz) = entry.timestamp.as_deref()
-                .and_then(parse_timestamp)
-                .unwrap_or((start_ts, 0));
-            // Average timestamp
-            let avg_ts = DateTime::from_timestamp(
-                (start_ts.timestamp() + ts.timestamp()) / 2,
-                0
-            ).unwrap_or(start_ts);
+        if first_ts.is_none() { first_ts = Some(ts); }
+        last_ts = Some(ts);
+        
+        if e.typ == "session" { if let Some(id) = e.id { sid = id; } continue; }
+        if e.typ == "model_change" { if let Some(m) = e.model_id { model = m; } continue; }
+        if e.typ != "message" { continue; }
+        
+        let msg = match e.message { Some(m) => m, None => continue };
+        if let Some(m) = &msg.model { model = m.clone(); }
+        if msg.role.as_deref() != Some("assistant") { continue; }
+        
+        let arr = match msg.content.as_ref().and_then(|c| c.as_array()) { Some(a) => a, None => continue };
+        
+        for blk in arr {
+            let typ = blk.get("type").and_then(|v| v.as_str());
+            let name = blk.get("name").and_then(|v| v.as_str()).map(|s| s.to_lowercase());
+            let args = blk.get("arguments");
             
-            operations.push(FileOperation {
-                timestamp: avg_ts,
-                tz_offset_minutes: tz,
-                model: current_model.clone(),
-                session_id: session_id.clone(),
-                op_type: OpType::SkippedLines { count },
-                path: String::new(),
-                line_number: start_line,
-            });
-        }
-
-        // Parse timestamp
-        let (timestamp, tz_offset) = match entry.timestamp.as_deref().and_then(parse_timestamp) {
-            Some((ts, tz)) => {
-                last_good_timestamp = Some(ts);
-                if first_timestamp.is_none() {
-                    first_timestamp = Some(ts);
+            if typ != Some("toolCall") { continue; }
+            let args = match args { Some(a) => a, None => continue };
+            
+            let fpath = args.get("file_path").or(args.get("path")).and_then(|v| v.as_str());
+            
+            match name.as_deref() {
+                Some("write") => {
+                    let (p, c) = match (fpath, args.get("content").and_then(|v| v.as_str())) {
+                        (Some(p), Some(c)) => (p, c), _ => continue
+                    };
+                    if let Some(f) = filter { if !p.contains(f) { continue; } }
+                    if verbose { eprintln!("[{}] write: {}", ts, p); }
+                    ops.push(Op { ts, tz, model: model.clone(), session: sid.clone(), kind: OpKind::Write(c.into()), path: p.into() });
                 }
-                last_timestamp = Some(ts);
-                (ts, tz)
-            }
-            None => continue, // Skip entries without valid timestamps
-        };
-
-        // Handle session metadata
-        if entry.entry_type == "session" {
-            if let Some(id) = entry.id {
-                session_id = id;
-            }
-            if let Some(cwd) = entry.cwd.clone() {
-                session_cwd = Some(cwd);
-            }
-            continue;
-        }
-
-        // Track model changes
-        if entry.entry_type == "model_change" {
-            if let Some(model_id) = entry.model_id {
-                current_model = model_id;
-            }
-            continue;
-        }
-
-        if entry.entry_type != "message" {
-            continue;
-        }
-
-        let msg = match entry.message {
-            Some(m) => m,
-            None => continue,
-        };
-
-        // Update model if present in message
-        if let Some(ref model) = msg.model {
-            current_model = model.clone();
-        }
-
-        // Handle tool results (reads)
-        if msg.role.as_deref() == Some("toolResult") {
-            if let Some(tool_name) = &msg.tool_name {
-                if tool_name.to_lowercase() == "read" {
-                    if let Some(content) = msg.content {
-                        if let Some(text) = content.as_str().or_else(|| {
-                            content.get("text").and_then(|t| t.as_str())
-                        }) {
-                            // We don't know the path from a toolResult directly
-                            // This is a limitation - reads don't include path in result
-                            // ASSUMPTION: We skip read operations as we can't reliably match them to paths
-                        }
-                    }
-                }
-            }
-            continue;
-        }
-
-        if msg.role.as_deref() != Some("assistant") {
-            continue;
-        }
-
-        let content = match msg.content {
-            Some(c) => c,
-            None => continue,
-        };
-
-        let content_arr = match content.as_array() {
-            Some(arr) => arr,
-            None => continue,
-        };
-
-        for block in content_arr {
-            let call: ToolCall = match serde_json::from_value(block.clone()) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-
-            if call.call_type.as_deref() != Some("toolCall") {
-                continue;
-            }
-
-            let name = match call.name {
-                Some(n) => n.to_lowercase(),
-                None => continue,
-            };
-
-            let args = match call.arguments {
-                Some(a) => a,
-                None => continue,
-            };
-
-            match name.as_str() {
-                "write" => {
-                    let file_path = args
-                        .get("file_path")
-                        .or_else(|| args.get("path"))
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
-
-                    let file_content = args.get("content").and_then(|v| v.as_str()).map(String::from);
-
-                    if let (Some(path), Some(content)) = (file_path, file_content) {
-                        written_files.insert(path.clone());
-                        
-                        if verbose {
-                            eprintln!("[{}] write: {}", timestamp, path);
-                        }
-
-                        operations.push(FileOperation {
-                            timestamp,
-                            tz_offset_minutes: tz_offset,
-                            model: current_model.clone(),
-                            session_id: session_id.clone(),
-                            op_type: OpType::Write { content },
-                            path,
-                            line_number: line_num,
-                        });
-                    }
-                }
-                "edit" => {
-                    let file_path = args
-                        .get("file_path")
-                        .or_else(|| args.get("path"))
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
-
-                    let old_text = args
-                        .get("oldText")
-                        .or_else(|| args.get("old_string"))
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
-
-                    let new_text = args
-                        .get("newText")
-                        .or_else(|| args.get("new_string"))
-                        .and_then(|v| v.as_str())
-                        .map(String::from)
-                        .unwrap_or_default();
-
-                    if let (Some(path), Some(old_text)) = (file_path, old_text) {
-                        written_files.insert(path.clone());
-                        
-                        if verbose {
-                            eprintln!("[{}] edit: {}", timestamp, path);
-                        }
-
-                        operations.push(FileOperation {
-                            timestamp,
-                            tz_offset_minutes: tz_offset,
-                            model: current_model.clone(),
-                            session_id: session_id.clone(),
-                            op_type: OpType::Edit { old_text, new_text },
-                            path,
-                            line_number: line_num,
-                        });
-                    }
-                }
-                "read" => {
-                    // We'll handle reads via tool results, but we need the path from here
-                    let file_path = args
-                        .get("file_path")
-                        .or_else(|| args.get("path"))
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
-                    
-                    if let Some(path) = file_path {
-                        // Store for later - we need to match with toolResult
-                        // ASSUMPTION: Skipping read-based context commits for now
-                        // as matching toolCall to toolResult is complex
-                        if verbose {
-                            eprintln!("[{}] read: {} (skipped - context commits not yet implemented)", timestamp, path);
-                        }
-                    }
+                Some("edit") => {
+                    let old = args.get("oldText").or(args.get("old_string")).and_then(|v| v.as_str());
+                    let new = args.get("newText").or(args.get("new_string")).and_then(|v| v.as_str()).unwrap_or("");
+                    let (p, o) = match (fpath, old) { (Some(p), Some(o)) => (p, o), _ => continue };
+                    if let Some(f) = filter { if !p.contains(f) { continue; } }
+                    if verbose { eprintln!("[{}] edit: {}", ts, p); }
+                    ops.push(Op { ts, tz, model: model.clone(), session: sid.clone(), kind: OpKind::Edit { old: o.into(), new: new.into() }, path: p.into() });
                 }
                 _ => {}
             }
         }
     }
-
-    // Handle any trailing skipped lines
-    if let Some((start_line, start_ts)) = skipped_start {
-        let count = 1; // At least one
-        operations.push(FileOperation {
-            timestamp: start_ts,
-            tz_offset_minutes: 0,
-            model: current_model.clone(),
-            session_id: session_id.clone(),
-            op_type: OpType::SkippedLines { count },
-            path: String::new(),
-            line_number: start_line,
-        });
-    }
-
-    let first_ts = first_timestamp.ok_or_else(|| {
-        anyhow::anyhow!("No valid timestamp found in session log: {}", session_path.display())
-    })?;
-
-    let last_ts = last_timestamp.unwrap_or(first_ts);
-
-    Ok((
-        SessionInfo {
-            id: session_id,
-            first_timestamp: first_ts,
-            last_timestamp: last_ts,
-            cwd: session_cwd,
-        },
-        operations,
-    ))
+    
+    let ft = first_ts.ok_or_else(|| anyhow::anyhow!("no timestamps in {}", path.display()))?;
+    let lt = last_ts.unwrap_or(ft);
+    Ok((sid, ft, lt, ops))
 }
 
-// ============================================================================
-// Path handling
-// ============================================================================
-
-/// Sanitize path: replace .git components with _.git
-fn sanitize_git_path(path: &Path) -> PathBuf {
-    let components: Vec<_> = path.components().map(|c| {
-        match c {
-            Component::Normal(s) => {
-                let s_str = s.to_string_lossy();
-                if s_str == ".git" {
-                    Component::Normal(std::ffi::OsStr::new("_.git"))
-                } else {
-                    c
-                }
+fn sanitize(p: &Path) -> PathBuf {
+    p.components().map(|c| {
+        if let Component::Normal(s) = c {
+            if s.to_string_lossy() == ".git" {
+                return Component::Normal(std::ffi::OsStr::new("_.git"));
             }
-            _ => c
         }
-    }).collect();
-    
-    components.iter().collect()
+        c
+    }).collect()
 }
 
-/// Convert absolute path to repo-relative path
-/// Returns None if path is external and ignore_external is true
-fn resolve_path(
-    path: &str,
-    repo_path: &Path,
-    ignore_external: bool,
-) -> Option<PathBuf> {
-    // Resolve symlinks
-    let abs_path = if Path::new(path).is_absolute() {
-        PathBuf::from(path)
-    } else {
-        repo_path.join(path)
-    };
+fn resolve(path: &str, repo: &Path, ignore_ext: bool) -> Option<PathBuf> {
+    let abs = if Path::new(path).is_absolute() { PathBuf::from(path) } else { repo.join(path) };
+    let resolved = abs.canonicalize().unwrap_or_else(|_| abs.clone());
+    let repo_resolved = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
     
-    let resolved = abs_path.canonicalize().unwrap_or(abs_path.clone());
-    let resolved_repo = repo_path.canonicalize().unwrap_or(repo_path.to_path_buf());
-
-    // Check if inside repo
-    if let Ok(rel) = resolved.strip_prefix(&resolved_repo) {
-        return Some(sanitize_git_path(rel));
+    if let Ok(rel) = resolved.strip_prefix(&repo_resolved) {
+        return Some(sanitize(rel));
     }
-
-    // External file
-    if ignore_external {
-        return None;
-    }
-
-    // Compute relative path using _../ encoding
-    // Find common ancestor
-    let mut repo_parts: Vec<_> = resolved_repo.components().collect();
-    let mut file_parts: Vec<_> = resolved.components().collect();
+    if ignore_ext { return None; }
     
-    let mut common_len = 0;
-    for (a, b) in repo_parts.iter().zip(file_parts.iter()) {
-        if a == b {
-            common_len += 1;
-        } else {
-            break;
-        }
-    }
-
-    // Number of _../ needed = remaining repo parts after common
-    let up_count = repo_parts.len() - common_len;
+    // External: use _../ encoding
+    let mut rparts: Vec<_> = repo_resolved.components().collect();
+    let fparts: Vec<_> = resolved.components().collect();
+    let common = rparts.iter().zip(&fparts).take_while(|(a,b)| a == b).count();
+    let ups = rparts.len() - common;
     
-    // Build path: _../^up_count / remaining file parts
     let mut result = PathBuf::new();
-    for _ in 0..up_count {
-        result.push("_..");
-    }
-    for part in &file_parts[common_len..] {
-        result.push(part);
-    }
-
-    Some(sanitize_git_path(&result))
+    for _ in 0..ups { result.push("_.."); }
+    for p in &fparts[common..] { result.push(p); }
+    Some(sanitize(&result))
 }
 
-// ============================================================================
-// Git operations
-// ============================================================================
+fn model_author(m: &str) -> (String, &'static str) {
+    let ml = m.to_lowercase();
+    let name = if ml.contains("opus") { format!("Claude Opus{}", version(&ml, "opus")) }
+        else if ml.contains("sonnet") { format!("Claude Sonnet{}", version(&ml, "sonnet")) }
+        else if ml.contains("haiku") { format!("Claude Haiku{}", version(&ml, "haiku")) }
+        else if ml.contains("claude") { "Claude".into() }
+        else { m.into() };
+    (name, "noreply@anthropic.com")
+}
 
-/// Check that repo is in clean state
-fn verify_clean_state(repo: &Repository) -> Result<()> {
-    // Check repo state
-    match repo.state() {
-        RepositoryState::Clean => {}
-        state => bail!("Repository is not in clean state: {:?}. Please resolve before running recovery.", state),
+fn version(m: &str, v: &str) -> String {
+    if let Some(i) = m.find(v) {
+        let after: String = m[i+v.len()..].chars()
+            .skip_while(|c| *c == '-' || *c == '_' || *c == '/')
+            .take_while(|c| c.is_ascii_digit() || *c == '-' || *c == '.')
+            .collect();
+        if !after.is_empty() { return format!(" {}", after.replace('-', ".")); }
     }
+    String::new()
+}
 
-    // Check for uncommitted changes
-    let statuses = repo.statuses(None)?;
-    for entry in statuses.iter() {
-        let status = entry.status();
-        if status.intersects(
-            git2::Status::INDEX_NEW
-            | git2::Status::INDEX_MODIFIED
-            | git2::Status::INDEX_DELETED
-            | git2::Status::INDEX_RENAMED
-            | git2::Status::INDEX_TYPECHANGE
-            | git2::Status::WT_NEW
-            | git2::Status::WT_MODIFIED
-            | git2::Status::WT_DELETED
-            | git2::Status::WT_RENAMED
-            | git2::Status::WT_TYPECHANGE
-        ) {
-            bail!("Repository has uncommitted changes. Please commit or stash before running recovery.");
+fn apply_edit(cur: &str, old: &str, new: &str) -> (String, bool) {
+    if cur.contains(old) { return (cur.replacen(old, new, 1), true); }
+    // Append fallback
+    let mut r = cur.to_string();
+    if !r.is_empty() && !r.ends_with('\n') { r.push('\n'); }
+    r.push_str("\n// [recovery] edit target not found, appending:\n");
+    r.push_str(new);
+    r.push('\n');
+    (r, false)
+}
+
+fn insert_file(repo: &Repository, base: Option<&git2::Tree>, path: &Path, blob: Oid) -> Result<Oid> {
+    let comps: Vec<_> = path.components().collect();
+    if comps.is_empty() { bail!("empty path"); }
+    
+    fn rec(repo: &Repository, base: Option<&git2::Tree>, comps: &[Component], blob: Oid) -> Result<Oid> {
+        let name = comps[0].as_os_str().to_str().unwrap();
+        if comps.len() == 1 {
+            let mut b = repo.treebuilder(base)?;
+            b.insert(name, blob, FileMode::Blob.into())?;
+            return Ok(b.write()?);
+        }
+        let sub = base.and_then(|t| t.get_name(name))
+            .and_then(|e| e.to_object(repo).ok())
+            .and_then(|o| o.into_tree().ok());
+        let sub_id = rec(repo, sub.as_ref(), &comps[1..], blob)?;
+        let mut b = repo.treebuilder(base)?;
+        b.insert(name, sub_id, FileMode::Tree.into())?;
+        Ok(b.write()?)
+    }
+    rec(repo, base, &comps, blob)
+}
+
+fn verify_clean(repo: &Repository) -> Result<()> {
+    if repo.state() != RepositoryState::Clean {
+        bail!("repo not clean: {:?}", repo.state());
+    }
+    for e in repo.statuses(None)?.iter() {
+        let s = e.status();
+        if s.intersects(git2::Status::INDEX_NEW | git2::Status::INDEX_MODIFIED | 
+                        git2::Status::INDEX_DELETED | git2::Status::WT_NEW |
+                        git2::Status::WT_MODIFIED | git2::Status::WT_DELETED) {
+            bail!("uncommitted changes");
         }
     }
-
     Ok(())
 }
 
-/// Convert model ID to git author
-fn model_to_author(model: &str) -> (String, &'static str) {
-    const EMAIL: &str = "noreply@anthropic.com";
+fn main() -> Result<()> {
+    let args = Args::parse();
     
-    let model_lower = model.to_lowercase();
+    if args.sessions.is_empty() { bail!("no sessions"); }
     
-    let name = if model_lower.contains("opus") {
-        format_model_name(model, "Opus")
-    } else if model_lower.contains("sonnet") {
-        format_model_name(model, "Sonnet")
-    } else if model_lower.contains("haiku") {
-        format_model_name(model, "Haiku")
-    } else if model_lower.contains("claude") {
-        "Claude".to_string()
-    } else if model_lower.contains("gpt-4") {
-        "GPT-4".to_string()
-    } else if model_lower.contains("gpt") {
-        "GPT".to_string()
-    } else {
-        // Unknown model - use raw identifier
-        model.to_string()
-    };
-    
-    (name, EMAIL)
-}
-
-fn format_model_name(model: &str, variant: &str) -> String {
-    let model_lower = model.to_lowercase();
-    
-    let version = if let Some(idx) = model_lower.find(variant.to_lowercase().as_str()) {
-        let after_variant = &model_lower[idx + variant.len()..];
-        let version_part: String = after_variant
-            .chars()
-            .skip_while(|c| *c == '-' || *c == '_' || *c == '/')
-            .take_while(|c| c.is_ascii_digit() || *c == '-' || *c == '.' || *c == '_')
-            .collect();
-        
-        if !version_part.is_empty() {
-            let cleaned = version_part.replace('-', ".").replace('_', ".");
-            format!(" {}", cleaned)
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
-    
-    format!("Claude {}{}", variant, version)
-}
-
-/// Apply an edit operation, returning result type
-fn apply_edit(current: &str, old_text: &str, new_text: &str) -> (String, EditResult) {
-    // Try exact match
-    if current.contains(old_text) {
-        return (current.replacen(old_text, new_text, 1), EditResult::ExactMatch);
+    // Extract all sessions
+    let mut all_sessions = Vec::new();
+    for sp in &args.sessions {
+        if !sp.exists() { bail!("not found: {}", sp.display()); }
+        let (sid, ft, lt, ops) = extract(sp, args.filter.as_deref(), args.verbose)?;
+        eprintln!("Session {}: {} ops", sid, ops.len());
+        all_sessions.push((sid, ft, lt, ops));
     }
-
-    // Try whitespace-normalized match
-    let current_normalized: String = current.split_whitespace().collect();
-    let old_normalized: String = old_text.split_whitespace().collect();
     
-    if current_normalized.contains(&old_normalized) {
-        // Find approximate location and replace
-        // This is a simplification - just do the replacement
-        let result = current.replacen(old_text.trim(), new_text, 1);
-        if result != current {
-            return (result, EditResult::FuzzyMatch { 
-                description: "whitespace-normalized match".to_string() 
-            });
-        }
-    }
-
-    // Fallback: append to end
-    let mut result = current.to_string();
-    if !result.ends_with('\n') && !result.is_empty() {
-        result.push('\n');
-    }
-    result.push_str("\n// [session-recovery] Failed to match edit target, appending:\n");
-    result.push_str(new_text);
-    result.push('\n');
+    // Build combined operation list with markers
+    let mut all_ops = Vec::new();
+    let mut session_ids = Vec::new();
     
-    (result, EditResult::Appended)
-}
-
-/// Build a tree with a file at the given path
-fn build_tree_with_file(
-    repo: &Repository,
-    base_tree: Option<&git2::Tree>,
-    file_path: &Path,
-    content: &[u8],
-) -> Result<Oid> {
-    let blob_id = repo.blob(content)?;
-    
-    // For simple case (single component), just insert directly
-    let components: Vec<_> = file_path.components().collect();
-    
-    if components.len() == 1 {
-        let mut builder = repo.treebuilder(base_tree)?;
-        builder.insert(
-            file_path.to_str().unwrap(),
-            blob_id,
-            FileMode::Blob.into(),
-        )?;
-        return Ok(builder.write()?);
-    }
-
-    // For nested paths, we need to build the tree hierarchy
-    // This is a recursive operation
-    fn insert_at_path(
-        repo: &Repository,
-        base_tree: Option<&git2::Tree>,
-        components: &[Component],
-        blob_id: Oid,
-    ) -> Result<Oid> {
-        if components.len() == 1 {
-            let mut builder = repo.treebuilder(base_tree)?;
-            let name = components[0].as_os_str().to_str().unwrap();
-            builder.insert(name, blob_id, FileMode::Blob.into())?;
-            return Ok(builder.write()?);
-        }
-
-        let dir_name = components[0].as_os_str().to_str().unwrap();
-        let rest = &components[1..];
-
-        // Get existing subtree if any
-        let existing_subtree = base_tree.and_then(|t| {
-            t.get_name(dir_name).and_then(|entry| {
-                if entry.kind() == Some(git2::ObjectType::Tree) {
-                    entry.to_object(repo).ok().and_then(|o| o.into_tree().ok())
-                } else {
-                    None
-                }
-            })
-        });
-
-        let subtree_id = insert_at_path(repo, existing_subtree.as_ref(), rest, blob_id)?;
-
-        let mut builder = repo.treebuilder(base_tree)?;
-        builder.insert(dir_name, subtree_id, FileMode::Tree.into())?;
-        Ok(builder.write()?)
-    }
-
-    insert_at_path(repo, base_tree, &components, blob_id)
-}
-
-/// Format session IDs for merge message
-fn format_session_list(ids: &[String]) -> String {
-    match ids.len() {
-        0 => String::new(),
-        1 => ids[0].clone(),
-        2 => format!("{} and {}", ids[0], ids[1]),
-        _ => {
-            let all_but_last = ids[..ids.len()-1].join(", ");
-            format!("{}, and {}", all_but_last, ids.last().unwrap())
-        }
-    }
-}
-
-// ============================================================================
-// Main recovery logic
-// ============================================================================
-
-fn run_recovery(
-    repo: &Repository,
-    sessions: Vec<(SessionInfo, Vec<FileOperation>)>,
-    repo_path: &Path,
-    branch_name: &str,
-    ignore_external: bool,
-    verbose: bool,
-) -> Result<(usize, bool)> {
-    let mut all_ops: Vec<FileOperation> = Vec::new();
-    let mut session_infos: Vec<SessionInfo> = Vec::new();
-    let mut had_errors = false;
-
-    // Collect all operations and add session markers
-    for (info, mut ops) in sessions {
-        // Add session start marker
-        all_ops.push(FileOperation {
-            timestamp: info.first_timestamp,
-            tz_offset_minutes: 0,
-            model: "system".to_string(),
-            session_id: info.id.clone(),
-            op_type: OpType::SessionStart,
-            path: String::new(),
-            line_number: 0,
-        });
-
-        // Check for skipped lines (errors)
-        for op in &ops {
-            if matches!(op.op_type, OpType::SkippedLines { .. }) {
-                had_errors = true;
-            }
-        }
-
+    for (sid, ft, lt, mut ops) in all_sessions {
+        all_ops.push(Op { ts: ft, tz: 0, model: "system".into(), session: sid.clone(), kind: OpKind::Start, path: String::new() });
         all_ops.append(&mut ops);
-
-        // Add session end marker
-        all_ops.push(FileOperation {
-            timestamp: info.last_timestamp,
-            tz_offset_minutes: 0,
-            model: "system".to_string(),
-            session_id: info.id.clone(),
-            op_type: OpType::SessionEnd,
-            path: String::new(),
-            line_number: 0,
-        });
-
-        session_infos.push(info);
+        all_ops.push(Op { ts: lt, tz: 0, model: "system".into(), session: sid.clone(), kind: OpKind::End, path: String::new() });
+        session_ids.push(sid);
     }
-
-    // Sort by timestamp
-    all_ops.sort_by_key(|op| op.timestamp);
-
-    // Count actual file operations
-    let file_op_count = all_ops.iter().filter(|op| {
-        matches!(op.op_type, OpType::Write { .. } | OpType::Edit { .. } | OpType::Read { .. })
-    }).count();
-
-    if file_op_count == 0 {
-        bail!("No file operations to recover from session(s)");
+    
+    all_ops.sort_by_key(|o| o.ts);
+    
+    let file_ops = all_ops.iter().filter(|o| matches!(o.kind, OpKind::Write(_) | OpKind::Edit {..})).count();
+    if file_ops == 0 { bail!("no file operations"); }
+    
+    eprintln!("Total: {} operations ({} file ops)", all_ops.len(), file_ops);
+    
+    if args.list_only {
+        for o in &all_ops {
+            let k = match &o.kind {
+                OpKind::Write(_) => "write", OpKind::Edit {..} => "edit",
+                OpKind::Start => "start", OpKind::End => "end", OpKind::Skip(n) => "skip",
+            };
+            println!("[{}] {} {} ({})", o.ts, k, o.path, o.session);
+        }
+        return Ok(());
     }
-
-    // Track file contents
-    let mut file_contents: HashMap<String, String> = HashMap::new();
-    let mut commit_count = 0;
-    let mut current_tree_id: Option<Oid> = None;
-    let mut parent_commit: Option<Oid> = None;
-    let mut session_orphans: HashMap<String, Oid> = HashMap::new();
-    let mut branch_tip: Option<Oid> = None;
-
-    // Track which session we're in for branch management
-    let mut active_sessions: HashSet<String> = HashSet::new();
-
+    
+    if args.dry_run {
+        eprintln!("DRY RUN: would create {} commits", all_ops.len());
+        return Ok(());
+    }
+    
+    // Open repo and verify clean
+    let repo_path = std::fs::canonicalize(&args.repo)?;
+    let repo = Repository::open(&repo_path)?;
+    verify_clean(&repo)?;
+    
+    let orig_head = repo.head().ok().and_then(|h| h.target());
+    let branch = args.branch.unwrap_or_else(|| format!("recovered-{}", session_ids.first().unwrap()));
+    
+    eprintln!("Creating branch: {}", branch);
+    
+    // State
+    let mut files: HashMap<String, String> = HashMap::new();
+    let mut tree_id: Option<Oid> = None;
+    let mut parent: Option<Oid> = None;
+    let mut commits = 0;
+    let mut errors = false;
+    let mut seen_sessions: HashSet<String> = HashSet::new();
+    let branch_ref = format!("refs/heads/{}", branch);
+    
     for op in &all_ops {
-        match &op.op_type {
-            OpType::SessionStart => {
-                let (author_name, author_email) = ("OpenClaw".to_string(), "noreply@anthropic.com");
-                let git_time = Time::new(op.timestamp.timestamp(), op.tz_offset_minutes);
-                let sig = Signature::new(&author_name, author_email, &git_time)?;
-
-                // Create orphan commit for this session
-                let empty_tree_id = repo.treebuilder(None)?.write()?;
-                let empty_tree = repo.find_tree(empty_tree_id)?;
+        let (aname, aemail) = if op.model == "system" { ("OpenClaw".into(), "noreply@anthropic.com") } else { model_author(&op.model) };
+        let gt = Time::new(op.ts.timestamp(), op.tz);
+        let sig = Signature::new(&aname, aemail, &gt)?;
+        
+        match &op.kind {
+            OpKind::Start => {
+                // Create orphan
+                let empty = repo.treebuilder(None)?.write()?;
+                let etree = repo.find_tree(empty)?;
+                let msg = format!("Beginning recovery from OpenClaw session {}", op.session);
+                let oid = repo.commit(None, &sig, &sig, &msg, &etree, &[])?;
+                commits += 1;
                 
-                let message = format!("Beginning recovery from OpenClaw session {}", op.session_id);
-                let orphan_id = repo.commit(None, &sig, &sig, &message, &empty_tree, &[])?;
-                
-                session_orphans.insert(op.session_id.clone(), orphan_id);
-                commit_count += 1;
-
-                if active_sessions.is_empty() {
-                    // First session - this orphan is our branch base
-                    parent_commit = Some(orphan_id);
-                    current_tree_id = Some(empty_tree_id);
-                    
-                    // Create branch
-                    let branch_ref = format!("refs/heads/{}", branch_name);
-                    repo.reference(&branch_ref, orphan_id, true, "session-recovery: initial")?;
-                } else {
-                    // Merge this orphan into ongoing recovery
-                    if let Some(tip) = branch_tip {
-                        let tip_commit = repo.find_commit(tip)?;
-                        let orphan_commit = repo.find_commit(orphan_id)?;
-                        
-                        // Create merge commit
-                        let tree = repo.find_tree(current_tree_id.unwrap())?;
-                        let message = format!("Including OpenClaw session {} in recovery", op.session_id);
-                        let merge_id = repo.commit(
-                            None, &sig, &sig, &message, &tree,
-                            &[&tip_commit, &orphan_commit]
-                        )?;
-                        
-                        parent_commit = Some(merge_id);
-                        branch_tip = Some(merge_id);
-                        commit_count += 1;
-
-                        // Update branch
-                        let branch_ref = format!("refs/heads/{}", branch_name);
-                        repo.reference(&branch_ref, merge_id, true, "session-recovery: include session")?;
-                    }
+                if seen_sessions.is_empty() {
+                    parent = Some(oid);
+                    tree_id = Some(empty);
+                    repo.reference(&branch_ref, oid, true, "init")?;
+                } else if let Some(p) = parent {
+                    // Merge orphan
+                    let pc = repo.find_commit(p)?;
+                    let oc = repo.find_commit(oid)?;
+                    let t = repo.find_tree(tree_id.unwrap())?;
+                    let msg = format!("Including OpenClaw session {} in recovery", op.session);
+                    let mid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc, &oc])?;
+                    parent = Some(mid);
+                    commits += 1;
+                    repo.reference(&branch_ref, mid, true, "merge")?;
                 }
-
-                active_sessions.insert(op.session_id.clone());
-                
-                if verbose {
-                    eprintln!("Session start: {}", op.session_id);
+                seen_sessions.insert(op.session.clone());
+            }
+            
+            OpKind::End => {
+                if let Some(tid) = tree_id {
+                    let t = repo.find_tree(tid)?;
+                    let msg = format!("Completing recovery from OpenClaw session {}", op.session);
+                    let pc = repo.find_commit(parent.unwrap())?;
+                    let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
+                    parent = Some(oid);
+                    commits += 1;
+                    repo.reference(&branch_ref, oid, true, "end")?;
                 }
             }
-
-            OpType::SessionEnd => {
-                let (author_name, author_email) = ("OpenClaw".to_string(), "noreply@anthropic.com");
-                let git_time = Time::new(op.timestamp.timestamp(), op.tz_offset_minutes);
-                let sig = Signature::new(&author_name, author_email, &git_time)?;
-
-                // Create session end commit
-                let tree = repo.find_tree(current_tree_id.unwrap_or_else(|| {
-                    repo.treebuilder(None).unwrap().write().unwrap()
-                }))?;
+            
+            OpKind::Write(content) => {
+                let rp = match resolve(&op.path, &repo_path, args.ignore_external) {
+                    Some(p) => p, None => { if args.verbose { eprintln!("skip external: {}", op.path); } continue; }
+                };
+                let ps = rp.to_string_lossy().to_string();
+                files.insert(ps.clone(), content.clone());
                 
-                let message = format!("Completing recovery from OpenClaw session {}", op.session_id);
-                let parent = repo.find_commit(parent_commit.unwrap())?;
-                let end_id = repo.commit(None, &sig, &
+                let blob = repo.blob(content.as_bytes())?;
+                let base = tree_id.and_then(|t| repo.find_tree(t).ok());
+                let new_tree = insert_file(&repo, base.as_ref(), &rp, blob)?;
+                tree_id = Some(new_tree);
+                
+                let t = repo.find_tree(new_tree)?;
+                let msg = format!("write: {}", ps);
+                let pc = repo.find_commit(parent.unwrap())?;
+                let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
+                parent = Some(oid);
+                commits += 1;
+                repo.reference(&branch_ref, oid, true, "write")?;
+                
+                if args.verbose { eprintln!("committed write: {}", ps); }
+            }
+            
+            OpKind::Edit { old, new } => {
+                let rp = match resolve(&op.path, &repo_path, args.ignore_external) {
+                    Some(p) => p, None => { if args.verbose { eprintln!("skip external: {}", op.path); } continue; }
+                };
+                let ps = rp.to_string_lossy().to_string();
+                let cur = files.get(&ps).cloned().unwrap_or_default();
+                let (updated, ok) = apply_edit(&cur, old, new);
+                files.insert(ps.clone(), updated.clone());
+                
+                let blob = repo.blob(updated.as_bytes())?;
+                let base = tree_id.and_then(|t| repo.find_tree(t).ok());
+                let new_tree = insert_file(&repo, base.as_ref(), &rp, blob)?;
+                tree_id = Some(new_tree);
+                
+                let t = repo.find_tree(new_tree)?;
+                let msg = if ok { format!("edit: {}", ps) } else { 
+                    errors = true;
+                    format!("⚠️ edit (appended): {}", ps) 
+                };
+                let pc = repo.find_commit(parent.unwrap())?;
+                let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
+                parent = Some(oid);
+                commits += 1;
+                repo.reference(&branch_ref, oid, true, "edit")?;
+                
+                if args.verbose { eprintln!("committed edit: {} (ok={})", ps, ok); }
+            }
+            
+            OpKind::Skip(n) => {
+                errors = true;
+                if let Some(tid) = tree_id {
+                    let t = repo.find_tree(tid)?;
+                    let msg = format!("⚠️ Skipped {} malformed lines", n);
+                    let pc = repo.find_commit(parent.unwrap())?;
+                    let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
+                    parent = Some(oid);
+                    commits += 1;
+                    repo.reference(&branch_ref, oid, true, "skip")?;
+                }
+            }
+        }
+    }
+    
+    eprintln!("Created {} commits on {}", commits, branch);
+    
+    // Prepare merge
+    if let Some(head_id) = orig_head {
+        let branch_commit = repo.find_commit(parent.unwrap())?;
+        let ann = repo.find_annotated_commit(branch_commit.id())?;
+        
+        // Checkout HEAD first
+        repo.set_head(&format!("refs/heads/{}", repo.head()?.shorthand().unwrap_or("main")))?;
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
+        
+        // Merge with prefer-theirs (recovery branch)
+        let mut opts = git2::MergeOptions::new();
+        opts.file_favor(git2::FileFavor::Theirs);
+        repo.merge(&[&ann], Some(&mut opts), None)?;
+        
+        // Prepare merge message
+        let slist = if session_ids.len() == 1 { 
+            format!("session {}", session_ids[0]) 
+        } else { 
+            format!("sessions {}", session_ids.join(", ")) 
+        };
+        let suffix = if errors { " (partial recovery with errors)" } else { "" };
+        let mmsg = format!("Merge recovered OpenClaw {}{}", slist, suffix);
+        
+        // Write MERGE_MSG
+        let git_dir = repo.path();
+        std::fs::write(git_dir.join("MERGE_MSG"), &mmsg)?;
+        
+        eprintln!("\nRepository in uncommitted merge state.");
+        eprintln!("Message: {}", mmsg);
+        eprintln!("To complete: git commit");
+        eprintln!("To abort: git merge --abort");
+    }
+    
+    Ok(())
+}
