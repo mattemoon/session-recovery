@@ -14,8 +14,8 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
 
-/// Default time range: 64*64*16*16 seconds ≈ 1,193 days ≈ 3.27 years
-const DEFAULT_SINCE_SECONDS: i64 = 64 * 64 * 16 * 16;
+/// Default time range: ~3 years (in seconds)
+const DEFAULT_SINCE_SECONDS: i64 = 3 * 365 * 24 * 60 * 60;
 
 /// Truncate commit ID to 12 characters
 fn short_oid(oid: Oid) -> String {
