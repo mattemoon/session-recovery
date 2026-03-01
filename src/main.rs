@@ -73,9 +73,13 @@ struct Args {
     #[arg(long)]
     scan_sessions: bool,
 
-    /// Directory to scan for sessions
+    /// OpenClaw sessions directory
     #[arg(long, default_value = "~/.openclaw/agents/main/sessions/")]
     sessions_dir: String,
+
+    /// Claude Code projects directory (scans all subdirectories)
+    #[arg(long, default_value = "~/.claude/projects/")]
+    claude_sessions_dir: String,
 
     /// Only include sessions with activity after this time
     #[arg(long)]
@@ -727,7 +731,7 @@ fn print_sessions(session_infos: &[SessionInfo]) {
     eprintln!("Sessions ({} found)", session_infos.len());
     for si in session_infos {
         let range = format_date_range(si.first_ts, si.last_ts);
-        eprintln!("  • {} ({}, {} ops)", &si.id[..8], range, si.op_count);
+        eprintln!("  • {} [{}] ({}, {} ops)", &si.id[..8], si.format, range, si.op_count);
     }
     eprintln!();
 }
