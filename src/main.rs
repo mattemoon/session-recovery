@@ -1104,6 +1104,18 @@ fn main() -> Result<()> {
     
     let orig_head = repo.head().ok().and_then(|h| h.target());
     
+    // Build session ID → format name map
+    let session_formats: HashMap<String, String> = session_infos.iter()
+        .map(|s| {
+            let fmt = match s.format {
+                LogFormat::ClaudeCode => "Claude Code",
+                LogFormat::OpenClaw => "OpenClaw",
+                LogFormat::Unknown => "Session",
+            };
+            (s.id.clone(), fmt.to_string())
+        })
+        .collect();
+    
     // Process operations and create commits
     let mut files: HashMap<String, String> = HashMap::new();
     let mut tree_id: Option<Oid> = None;
@@ -1182,7 +1194,14 @@ fn main() -> Result<()> {
                 let (aname, aemail) = model_author(&op.model);
                 let sig = Signature::new(&aname, aemail, &Time::new(op.ts.timestamp(), op.tz))?;
                 let t = repo.find_tree(new_tree)?;
-                let msg = format!("write: {}", ps);
+                // Get format name for session ID line
+                let format_name = if op.model.contains("opus") || op.model.contains("sonnet") || op.model.contains("haiku") || op.model.contains("claude") {
+                    // Model name indicates OpenClaw
+                    "OpenClaw"
+                } else {
+                    "Session"
+                };
+                let msg = format!("write: {}\n\n{} session {}", ps, format_name, op.session);
                 let pc = repo.find_commit(parent.unwrap())?;
                 let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
                 parent = Some(oid);
