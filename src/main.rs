@@ -1273,14 +1273,22 @@ fn main() -> Result<()> {
         };
         repo.checkout_tree(tree_to_use.as_object(), Some(git2::build::CheckoutBuilder::new().force()))?;
         
-        let session_ids: Vec<_> = session_infos.iter().map(|s| &s.id[..8]).collect();
-        let slist = if session_ids.len() == 1 { 
-            format!("session {}", session_ids[0]) 
+        // Build session list with format labels
+        let session_labels: Vec<_> = session_infos.iter().map(|s| {
+            let fmt = match s.format {
+                LogFormat::ClaudeCode => "Claude Code",
+                LogFormat::OpenClaw => "OpenClaw", 
+                LogFormat::Unknown => "unknown",
+            };
+            format!("{} ({})", &s.id[..8], fmt)
+        }).collect();
+        let slist = if session_labels.len() == 1 { 
+            format!("session {}", session_labels[0]) 
         } else { 
-            format!("sessions {}", session_ids.join(", ")) 
+            format!("sessions {}", session_labels.join(", ")) 
         };
         let suffix = if !warnings.is_empty() { " (partial recovery with errors)" } else { "" };
-        let mmsg = format!("Merge recovered OpenClaw {}{}", slist, suffix);
+        let mmsg = format!("Merge recovered {}{}", slist, suffix);
         
         let git_dir = repo.path();
         fs::write(git_dir.join("MERGE_MSG"), &mmsg)?;
