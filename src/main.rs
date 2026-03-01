@@ -1250,55 +1250,10 @@ fn main() -> Result<()> {
     
     for (op_idx, op) in all_ops.iter().enumerate() {
         match &op.kind {
-            OpKind::Start => {
-                // op.model contains format name ("OpenClaw", "Claude Code") for Start/End ops
-                let source = &op.model;
-                let sig = Signature::new(source, "noreply@anthropic.com", &Time::new(op.ts.timestamp(), op.tz))?;
-                let empty = repo.treebuilder(None)?.write()?;
-                let etree = repo.find_tree(empty)?;
-                let msg = format!("Beginning recovery from {} session {}", source, op.session);
-                let oid = repo.commit(None, &sig, &sig, &msg, &etree, &[])?;
-                total_commits += 1;
-                
-                session_commits.entry(op.session.clone()).or_insert((None, None)).0 = Some(oid);
-                
-                if seen_sessions.is_empty() {
-                    parent = Some(oid);
-                    tree_id = Some(empty);
-                    if args.confirm {
-                        repo.reference(&branch_ref, oid, true, "init recovery branch")?;
-                    }
-                } else if let Some(p) = parent {
-                    let pc = repo.find_commit(p)?;
-                    let oc = repo.find_commit(oid)?;
-                    let t = repo.find_tree(tree_id.unwrap())?;
-                    let msg = format!("Including {} session {} in recovery", source, op.session);
-                    let mid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc, &oc])?;
-                    parent = Some(mid);
-                    total_commits += 1;
-                    if args.confirm {
-                        repo.reference(&branch_ref, mid, true, "merge session")?;
-                    }
-                }
+            OpKind::Start | OpKind::End => {
+                // Session markers are for batching logic only, no commits created
+                // All session info is in the commit message body
                 seen_sessions.insert(op.session.clone());
-            }
-            OpKind::End => {
-                if let Some(tid) = tree_id {
-                    let source = &op.model;
-                    let sig = Signature::new(source, "noreply@anthropic.com", &Time::new(op.ts.timestamp(), op.tz))?;
-                    let t = repo.find_tree(tid)?;
-                    let msg = format!("Completing recovery from {} session {}", source, op.session);
-                    let pc = repo.find_commit(parent.unwrap())?;
-                    let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
-                    parent = Some(oid);
-                    total_commits += 1;
-                    
-                    session_commits.entry(op.session.clone()).or_insert((None, None)).1 = Some(oid);
-                    
-                    if args.confirm {
-                        repo.reference(&branch_ref, oid, true, "end session")?;
-                    }
-                }
             }
             OpKind::Write(content) => {
                 let rp = match resolve(&op.path, &repo_path, args.ignore_external, args.strip_prefix.as_deref(), args.add_prefix.as_deref()) { 
