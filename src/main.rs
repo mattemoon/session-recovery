@@ -1046,7 +1046,7 @@ fn main() -> Result<()> {
         for op in ops {
             all_ops.push(op);
         }
-        all_ops.push(Op { ts: lt, tz: 0, model: "system".into(), session: sid.clone(), kind: OpKind::End, path: String::new() });
+        all_ops.push(Op { ts: lt, tz: 0, model: format_name.into(), session: sid.clone(), kind: OpKind::End, path: String::new() });
     }
     
     all_ops.sort_by_key(|o| o.ts);
