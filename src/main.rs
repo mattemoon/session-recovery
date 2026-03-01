@@ -758,14 +758,18 @@ fn scan_claude_code_sessions(dir: &Path, includes: &[Pattern], since: DateTime<U
 }
 
 /// Scan all session sources
-fn scan_sessions(openclaw_dir: &Path, claude_code_dir: &Path, includes: &[Pattern], since: DateTime<Utc>, until: DateTime<Utc>, verbose: bool) -> Result<Vec<PathBuf>> {
+fn scan_sessions(openclaw_dir: &Path, claude_code_dir: &Path, includes: &[Pattern], since: DateTime<Utc>, until: DateTime<Utc>, verbose: bool, openclaw_only: bool, claude_only: bool) -> Result<Vec<PathBuf>> {
     let mut all_sessions = Vec::new();
     
-    let openclaw = scan_openclaw_sessions(openclaw_dir, includes, since, until, verbose)?;
-    let claude = scan_claude_code_sessions(claude_code_dir, includes, since, until, verbose)?;
+    if !claude_only {
+        let openclaw = scan_openclaw_sessions(openclaw_dir, includes, since, until, verbose)?;
+        all_sessions.extend(openclaw);
+    }
     
-    all_sessions.extend(openclaw);
-    all_sessions.extend(claude);
+    if !openclaw_only {
+        let claude = scan_claude_code_sessions(claude_code_dir, includes, since, until, verbose)?;
+        all_sessions.extend(claude);
+    }
     
     // Sort by path for consistent ordering
     all_sessions.sort();
