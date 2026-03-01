@@ -85,9 +85,14 @@
 - ✅ `--strip-prefix "/other/worktree/"` correctly removes prefix
 - ✅ `/other/worktree/src/main.rs` becomes `src/main.rs`
 
+#### Exclude Patterns
+- ✅ `--exclude "**/test_*"` correctly filters out matching files
+
+#### Empty Recovery
+- ✅ Session with no file operations returns error "no file operations"
+
 ## Not Yet Tested
 
-- [ ] `--exclude` patterns
 - [ ] `--add-prefix` (tested `--strip-prefix` only)
 - [ ] `--no-collapse` flag
 - [ ] Commit collapsing behavior
