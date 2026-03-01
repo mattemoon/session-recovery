@@ -1197,9 +1197,23 @@ fn main() -> Result<()> {
     let mut seen_sessions: HashSet<String> = HashSet::new();
     let mut session_commits: HashMap<String, (Option<Oid>, Option<Oid>)> = HashMap::new();
     let branch_ref = format!("refs/heads/{}", branch);
-    let mut batch_iter = batches.iter().peekable();
+    // Map op index → batch index for quick lookup
+    let mut op_to_batch: HashMap<usize, usize> = HashMap::new();
+    for (batch_idx, batch) in batches.iter().enumerate() {
+        for &op_idx in batch {
+            op_to_batch.insert(op_idx, batch_idx);
+        }
+    }
     
-    for op in &all_ops {
+    // Track batch state for consolidated commits
+    let mut current_batch_ops: Vec<(String, &str, String)> = Vec::new(); // (path, kind, session)
+    let mut current_batch_idx: Option<usize> = None;
+    let mut pending_batch_tree: Option<Oid> = None;
+    let mut pending_batch_ts: Option<DateTime<Utc>> = None;
+    let mut pending_batch_tz: i32 = 0;
+    let mut pending_batch_model: String = String::new();
+    
+    for (op_idx, op) in all_ops.iter().enumerate() {
         match &op.kind {
             OpKind::Start => {
                 // op.model contains format name ("OpenClaw", "Claude Code") for Start/End ops
@@ -1264,18 +1278,60 @@ fn main() -> Result<()> {
                 let new_tree = insert_file(&repo, base.as_ref(), &rp, blob)?;
                 tree_id = Some(new_tree);
                 
-                let (aname, aemail) = model_author(&op.model);
-                let sig = Signature::new(&aname, aemail, &Time::new(op.ts.timestamp(), op.tz))?;
-                let t = repo.find_tree(new_tree)?;
-                let format_name = session_formats.get(&op.session).map(|s| s.as_str()).unwrap_or("Session");
-                let msg = format!("write: {}\n\n{} session {}", ps, format_name, op.session);
-                let pc = repo.find_commit(parent.unwrap())?;
-                let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
-                parent = Some(oid);
-                total_commits += 1;
+                // Track this op for batch
+                let batch_idx = op_to_batch.get(&op_idx).copied();
+                current_batch_ops.push((ps.clone(), "write", op.session.clone()));
+                pending_batch_tree = Some(new_tree);
+                pending_batch_ts = Some(op.ts);
+                pending_batch_tz = op.tz;
+                pending_batch_model = op.model.clone();
                 
-                if args.confirm {
-                    repo.reference(&branch_ref, oid, true, "write")?;
+                // Check if this is the last op in the batch
+                let is_batch_end = match batch_idx {
+                    Some(bi) => {
+                        let batch = &batches[bi];
+                        batch.last() == Some(&op_idx)
+                    }
+                    None => true,
+                };
+                
+                if is_batch_end {
+                    // Create commit for this batch
+                    let (aname, aemail) = model_author(&pending_batch_model);
+                    let sig = Signature::new(&aname, aemail, &Time::new(pending_batch_ts.unwrap().timestamp(), pending_batch_tz))?;
+                    let t = repo.find_tree(pending_batch_tree.unwrap())?;
+                    
+                    // Build commit message
+                    let msg = if current_batch_ops.len() == 1 {
+                        // Single op: simple message
+                        let format_name = session_formats.get(&op.session).map(|s| s.as_str()).unwrap_or("Session");
+                        format!("write: {}\n\n{} session {}", ps, format_name, op.session)
+                    } else {
+                        // Multiple ops: consolidated message
+                        let mut msg = String::new();
+                        for (path, kind, _) in &current_batch_ops {
+                            msg.push_str(&format!("{}: {}\n", kind, path));
+                        }
+                        msg.push('\n');
+                        let sessions: HashSet<_> = current_batch_ops.iter().map(|(_, _, s)| s.as_str()).collect();
+                        for session in sessions {
+                            let format_name = session_formats.get(session).map(|s| s.as_str()).unwrap_or("Session");
+                            msg.push_str(&format!("{} session {}\n", format_name, session));
+                        }
+                        msg
+                    };
+                    
+                    let pc = repo.find_commit(parent.unwrap())?;
+                    let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
+                    parent = Some(oid);
+                    total_commits += 1;
+                    
+                    if args.confirm {
+                        repo.reference(&branch_ref, oid, true, "write")?;
+                    }
+                    
+                    // Clear batch state
+                    current_batch_ops.clear();
                 }
             }
             OpKind::Edit { old, new } => {
@@ -1293,24 +1349,171 @@ fn main() -> Result<()> {
                 let new_tree = insert_file(&repo, base.as_ref(), &rp, blob)?;
                 tree_id = Some(new_tree);
                 
-                let (aname, aemail) = model_author(&op.model);
-                let sig = Signature::new(&aname, aemail, &Time::new(op.ts.timestamp(), op.tz))?;
-                let t = repo.find_tree(new_tree)?;
-                let format_name = session_formats.get(&op.session).map(|s| s.as_str()).unwrap_or("Session");
-                let msg = if ok { 
-                    format!("edit: {}\n\n{} session {}", ps, format_name, op.session) 
-                } else { 
-                    format!("⚠️ edit (mismatched): {}\n\n{} session {}", ps, format_name, op.session) 
-                };
-                let pc = repo.find_commit(parent.unwrap())?;
-                let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
-                parent = Some(oid);
-                total_commits += 1;
+                // Determine edit kind label
+                let kind_label = if ok { "edit" } else { "⚠️ edit (mismatched)" };
                 
-                if !ok {
-                    warnings.push(Warning {
+                // Track this op for batch
+                current_batch_ops.push((ps.clone(), kind_label, op.session.clone()));
+                pending_batch_tree = Some(new_tree);
+                pending_batch_ts = Some(op.ts);
+                pending_batch_tz = op.tz;
+                pending_batch_model = op.model.clone();
+                
+                // Check if this is the last op in the batch
+                let batch_idx = op_to_batch.get(&op_idx).copied();
+                let is_batch_end = match batch_idx {
+                    Some(bi) => {
+                        let batch = &batches[bi];
+                        batch.last() == Some(&op_idx)
+                    }
+                    None => true,
+                };
+                
+                // Track warning (always, even if batch continues)
+                let pending_warning = if !ok {
+                    Some(Warning {
                         path: ps.clone(),
                         ts: op.ts,
+                        message: "Edit target not found, content appended as mismatched".into(),
+                        commit: None, // Will be filled in when we commit
+                    })
+                } else {
+                    None
+                };
+                
+                if is_batch_end {
+                    // Create commit for this batch
+                    let (aname, aemail) = model_author(&pending_batch_model);
+                    let sig = Signature::new(&aname, aemail, &Time::new(pending_batch_ts.unwrap().timestamp(), pending_batch_tz))?;
+                    let t = repo.find_tree(pending_batch_tree.unwrap())?;
+                    
+                    // Build commit message
+                    let msg = if current_batch_ops.len() == 1 {
+                        // Single op: simple message
+                        let format_name = session_formats.get(&op.session).map(|s| s.as_str()).unwrap_or("Session");
+                        format!("{}: {}\n\n{} session {}", kind_label, ps, format_name, op.session)
+                    } else {
+                        // Multiple ops: consolidated message
+                        let mut msg = String::new();
+                        for (path, kind, _) in &current_batch_ops {
+                            msg.push_str(&format!("{}: {}\n", kind, path));
+                        }
+                        msg.push('\n');
+                        let sessions: HashSet<_> = current_batch_ops.iter().map(|(_, _, s)| s.as_str()).collect();
+                        for session in sessions {
+                            let format_name = session_formats.get(session).map(|s| s.as_str()).unwrap_or("Session");
+                            msg.push_str(&format!("{} session {}\n", format_name, session));
+                        }
+                        msg
+                    };
+                    
+                    let pc = repo.find_commit(parent.unwrap())?;
+                    let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
+                    parent = Some(oid);
+                    total_commits += 1;
+                    
+                    // Add warning with commit ID
+                    if let Some(mut w) = pending_warning {
+                        w.commit = Some(oid);
+                        warnings.push(w);
+                    }
+                    
+                    if args.confirm {
+                        repo.reference(&branch_ref, oid, true, "edit")?;
+                    }
+                    
+                    // Clear batch state
+                    current_batch_ops.clear();
+                } else if let Some(w) = pending_warning {
+                    // Batch continues, but we need to track the warning
+                    // We'll add it with the batch commit ID later
+                    warnings.push(Warning {
+                        path: w.path,
+                        ts: w.ts,
+                        message: w.message,
+                        commit: None, // Unknown until batch commits
+                    });
+                }
+            }
+        }
+    }
+    
+    // Update session_infos with commit IDs
+    for si in &mut session_infos {
+        if let Some((first, last)) = session_commits.get(&si.id) {
+            si.first_commit = *first;
+            si.last_commit = *last;
+        }
+    }
+    
+    // Get first and last commits overall
+    let first_commit = session_infos.first().and_then(|s| s.first_commit);
+    let last_commit = parent;
+    
+    // Print results
+    print_processing_result(&session_infos, total_commits, &warnings);
+    print_warnings(&warnings);
+    
+    if !args.confirm {
+        print_preview_result(file_ops, total_commits, first_commit, last_commit);
+        return Ok(());
+    }
+    
+    // Set up merge state (--confirm mode only)
+    if let Some(head_id) = orig_head {
+        let branch_commit = repo.find_commit(parent.unwrap())?;
+        let ann = repo.find_annotated_commit(branch_commit.id())?;
+        
+        // Validate merge strategy
+        let use_theirs = match args.merge.as_str() {
+            "ours" => false,
+            "theirs" => true,
+            other => bail!("Invalid merge strategy '{}'. Use 'ours' or 'theirs'.", other),
+        };
+        
+        repo.merge(&[&ann], None, None)?;
+        
+        // Checkout the appropriate tree based on strategy
+        let tree_to_use = if use_theirs {
+            // "theirs" = use the recovery branch's tree (the recovered files)
+            branch_commit.tree()?
+        } else {
+            // "ours" = keep our original tree (just add history)
+            let our_commit = repo.find_commit(head_id)?;
+            our_commit.tree()?
+        };
+        repo.checkout_tree(tree_to_use.as_object(), Some(git2::build::CheckoutBuilder::new().force()))?;
+        
+        // Build session list with format labels
+        let session_labels: Vec<_> = session_infos.iter().map(|s| {
+            let fmt = match s.format {
+                LogFormat::ClaudeCode => "Claude Code",
+                LogFormat::OpenClaw => "OpenClaw", 
+                LogFormat::Unknown => "unknown",
+            };
+            format!("{} ({})", &s.id[..8], fmt)
+        }).collect();
+        let slist = if session_labels.len() == 1 { 
+            format!("session {}", session_labels[0]) 
+        } else { 
+            format!("sessions {}", session_labels.join(", ")) 
+        };
+        let suffix = if !warnings.is_empty() { " (partial recovery with errors)" } else { "" };
+        let mmsg = format!("Merge recovered {}{}", slist, suffix);
+        
+        let git_dir = repo.path();
+        fs::write(git_dir.join("MERGE_MSG"), &mmsg)?;
+        
+        print_merge_state(&branch, parent.unwrap(), &mmsg, !warnings.is_empty(), &args.merge);
+    } else {
+        eprintln!("Branch created: {} @ {}", branch, short_oid(parent.unwrap()));
+        eprintln!();
+        eprintln!("No existing HEAD to merge with.");
+        eprintln!("To use this branch: git checkout {}", branch);
+    }
+    
+    Ok(())
+}
                         message: "Edit target not found, content appended as mismatched".into(),
                         commit: Some(oid),
                     });
