@@ -1514,14 +1514,6 @@ fn main() -> Result<()> {
     
     Ok(())
 }
-                        message: "Edit target not found, content appended as mismatched".into(),
-                        commit: Some(oid),
-                    });
-                }
-                
-                if args.confirm {
-                    repo.reference(&branch_ref, oid, true, "edit")?;
-                }
             }
         }
     }
