@@ -224,8 +224,7 @@ Supports both OpenClaw (.openclaw/agents/*/sessions/) and Claude Code
 ## Commit Plan
 
 1. `session-recovery: add log format detection`
-2. `session-recovery: refactor parser into trait`
+2. `session-recovery: add --claude-sessions-dir scanning`
 3. `session-recovery: implement Claude Code parser`
-4. `session-recovery: add --claude-sessions-dir scanning`
-5. `session-recovery: unified mixed-source recovery`
-6. `session-recovery: update docs for Claude Code support`
+4. `session-recovery: mixed-source recovery`
+5. `session-recovery: update docs for Claude Code support`
