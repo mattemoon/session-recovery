@@ -291,7 +291,7 @@ fn extract(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_exter
                     _last_was_user = false;
                 }
                 _ => {
-                    if !is_safe_tool(tool_name) { last_was_user = true; }
+                    if !is_safe_tool(tool_name) { _last_was_user = true; }
                 }
             }
         }
