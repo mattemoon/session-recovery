@@ -71,6 +71,14 @@ struct Args {
     #[arg(long)]
     no_collapse: bool,
 
+    /// Remove this prefix from file paths
+    #[arg(long)]
+    strip_prefix: Option<String>,
+
+    /// Add this prefix to file paths
+    #[arg(long)]
+    add_prefix: Option<String>,
+
     /// Actually apply the recovery (default: preview only)
     #[arg(long, visible_alias = "yes")]
     confirm: bool,
@@ -273,7 +281,33 @@ fn sanitize(p: &Path) -> PathBuf {
     }).collect()
 }
 
-fn resolve(path: &str, repo: &Path, ignore_ext: bool) -> Option<PathBuf> {
+fn remap_path(path: &str, strip_prefix: Option<&str>, add_prefix: Option<&str>) -> String {
+    let mut result = path.to_string();
+    
+    // Strip prefix if specified
+    if let Some(prefix) = strip_prefix {
+        if result.starts_with(prefix) {
+            result = result[prefix.len()..].to_string();
+            // Remove leading slash if present
+            if result.starts_with('/') {
+                result = result[1..].to_string();
+            }
+        }
+    }
+    
+    // Add prefix if specified
+    if let Some(prefix) = add_prefix {
+        result = format!("{}{}", prefix, result);
+    }
+    
+    result
+}
+
+fn resolve(path: &str, repo: &Path, ignore_ext: bool, strip_prefix: Option<&str>, add_prefix: Option<&str>) -> Option<PathBuf> {
+    // Apply path remapping first
+    let remapped = remap_path(path, strip_prefix, add_prefix);
+    let path = &remapped;
+    
     let abs = if Path::new(path).is_absolute() { PathBuf::from(path) } else { repo.join(path) };
     let resolved = abs.canonicalize().unwrap_or_else(|_| abs.clone());
     let repo_resolved = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
