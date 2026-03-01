@@ -272,7 +272,16 @@ fn detect_log_format(path: &Path) -> LogFormat {
     LogFormat::Unknown
 }
 
-fn extract(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_external: bool, repo_path: &Path, cutoff: Option<DateTime<Utc>>, verbose: bool) -> Result<(String, DateTime<Utc>, DateTime<Utc>, Vec<Op>)> {
+fn extract(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_external: bool, repo_path: &Path, cutoff: Option<DateTime<Utc>>, verbose: bool) -> Result<(String, LogFormat, DateTime<Utc>, DateTime<Utc>, Vec<Op>)> {
+    let format = detect_log_format(path);
+    
+    match format {
+        LogFormat::ClaudeCode => extract_claude_code(path, includes, excludes, ignore_external, repo_path, cutoff, verbose),
+        LogFormat::OpenClaw | LogFormat::Unknown => extract_openclaw(path, includes, excludes, ignore_external, repo_path, cutoff, verbose, format),
+    }
+}
+
+fn extract_openclaw(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_external: bool, repo_path: &Path, cutoff: Option<DateTime<Utc>>, verbose: bool, format: LogFormat) -> Result<(String, LogFormat, DateTime<Utc>, DateTime<Utc>, Vec<Op>)> {
     let file = File::open(path).with_context(|| format!("open: {}", path.display()))?;
     let rdr = BufReader::new(file);
     
