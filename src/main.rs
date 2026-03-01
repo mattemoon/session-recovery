@@ -1308,7 +1308,6 @@ fn main() -> Result<()> {
                     } else {
                         repo.commit(None, &sig, &sig, &msg, &t, &[])?
                     };
-                    let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
                     parent = Some(oid);
                     total_commits += 1;
                     
@@ -1383,8 +1382,13 @@ fn main() -> Result<()> {
                         format_batch_commit_message(&current_batch_ops, &session_formats)
                     };
                     
-                    let pc = repo.find_commit(parent.unwrap())?;
-                    let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
+                    // Create commit (first commit has no parent)
+                    let oid = if let Some(p) = parent {
+                        let pc = repo.find_commit(p)?;
+                        repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?
+                    } else {
+                        repo.commit(None, &sig, &sig, &msg, &t, &[])?
+                    };
                     parent = Some(oid);
                     total_commits += 1;
                     
