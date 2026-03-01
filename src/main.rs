@@ -226,7 +226,7 @@ fn extract(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_exter
     let mut sid = path.file_stem().and_then(|s| s.to_str()).unwrap_or("x").to_string();
     let mut first_ts: Option<DateTime<Utc>> = None;
     let mut last_ts: Option<DateTime<Utc>> = None;
-    let mut last_was_user = false;
+    let mut _last_was_user = false;
 
     for line in rdr.lines().flatten() {
         if line.trim().is_empty() { continue; }
@@ -252,7 +252,7 @@ fn extract(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_exter
         if let Some(m) = &msg.model { model = m.clone(); }
         
         if msg.role.as_deref() == Some("user") {
-            last_was_user = true;
+            _last_was_user = true;
             continue;
         }
         
@@ -279,7 +279,7 @@ fn extract(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_exter
                     if !should_include_path(p, includes, excludes, ignore_external, repo_path) { continue; }
                     if verbose { eprintln!("  [{}] write: {}", ts.format("%H:%M:%S"), p); }
                     ops.push(Op { ts, tz, model: model.clone(), session: sid.clone(), kind: OpKind::Write(c.into()), path: p.into() });
-                    last_was_user = false;
+                    _last_was_user = false;
                 }
                 "edit" => {
                     let old = args.get("oldText").or(args.get("old_string")).and_then(|v| v.as_str());
@@ -481,7 +481,7 @@ fn format_date_range(first: DateTime<Utc>, last: DateTime<Utc>) -> String {
     if f == l { f } else { format!("{} to {}", f, l) }
 }
 
-fn print_header(args: &Args, branch: &str, since: DateTime<Utc>, until: DateTime<Utc>) {
+fn print_header(args: &Args, branch: &str, _since: DateTime<Utc>, _until: DateTime<Utc>) {
     eprintln!("session-recovery v{}", env!("CARGO_PKG_VERSION"));
     eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     eprintln!();
@@ -537,7 +537,7 @@ fn print_sessions(session_infos: &[SessionInfo]) {
     eprintln!();
 }
 
-fn print_files(file_infos: &BTreeMap<String, FileInfo>, verbose: bool) {
+fn print_files(file_infos: &BTreeMap<String, FileInfo>, _verbose: bool) {
     eprintln!("Files to Recover");
     for (path, info) in file_infos {
         let session_word = if info.sessions.len() == 1 { "session" } else { "sessions" };
@@ -584,7 +584,7 @@ fn print_warnings(warnings: &[Warning]) {
     eprintln!();
 }
 
-fn print_merge_state(branch: &str, last_commit: Oid, merge_msg: &str, errors: bool) {
+fn print_merge_state(branch: &str, last_commit: Oid, _merge_msg: &str, errors: bool) {
     eprintln!("Branch created: {} @ {}", branch, short_oid(last_commit));
     eprintln!();
     eprintln!("Merge State");
