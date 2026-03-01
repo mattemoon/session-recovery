@@ -76,8 +76,14 @@ session-recovery path/to/session.jsonl --confirm
 ### Auto-Discover Sessions
 
 ```bash
-# Find all sessions touching certain files
+# Find all sessions touching certain files (scans both OpenClaw and Claude Code)
 session-recovery --scan-sessions --include "**/src/**"
+
+# Only OpenClaw sessions
+session-recovery --scan-sessions --include "**/src/**" --openclaw-only
+
+# Only Claude Code sessions  
+session-recovery --scan-sessions --include "**/src/**" --claude-only
 
 # Apply
 session-recovery --scan-sessions --include "**/src/**" --confirm
@@ -179,9 +185,12 @@ Options:
       --include <GLOB>       Include files matching pattern (repeatable)
       --exclude <GLOB>       Exclude files matching pattern (repeatable)
       --ignore-external      Skip files outside repo
-      --scan-sessions        Auto-discover sessions
-      --sessions-dir <PATH>  Session directory [default: ~/.openclaw/agents/main/sessions/]
-      --since <TIME>         Start of time range [default: ~3.3 years ago]
+      --scan-sessions        Auto-discover sessions from both sources
+      --sessions-dir <PATH>  OpenClaw sessions [default: ~/.openclaw/agents/main/sessions/]
+      --claude-sessions-dir  Claude Code sessions [default: ~/.claude/projects/]
+      --openclaw-only        Only scan OpenClaw sessions
+      --claude-only          Only scan Claude Code sessions
+      --since <TIME>         Start of time range [default: ~3 years ago]
       --until <TIME>         End of time range [default: now]
       --at <PATH@TIME>       Point-in-time recovery
       --lookback <DUR>       Lookback for --at [default: 14d]
