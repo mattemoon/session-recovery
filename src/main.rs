@@ -1,7 +1,8 @@
-//! session-recovery — Recover file history from OpenClaw session logs
+//! session-recovery — Recover file history from OpenClaw and Claude Code session logs
 //!
 //! See DESIGN.md for full specification.
 //! See OUTPUT_FORMAT.md for CLI output design.
+//! See CLAUDE_CODE_SUPPORT.md for multi-format support.
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -16,6 +17,24 @@ use std::path::{Component, Path, PathBuf};
 
 /// Default time range: ~3 years (in seconds)
 const DEFAULT_SINCE_SECONDS: i64 = 3 * 365 * 24 * 60 * 60;
+
+/// Session log format
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogFormat {
+    OpenClaw,
+    ClaudeCode,
+    Unknown,
+}
+
+impl std::fmt::Display for LogFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LogFormat::OpenClaw => write!(f, "openclaw"),
+            LogFormat::ClaudeCode => write!(f, "claude-code"),
+            LogFormat::Unknown => write!(f, "unknown"),
+        }
+    }
+}
 
 /// Truncate commit ID to 12 characters
 fn short_oid(oid: Oid) -> String {
@@ -125,6 +144,7 @@ enum OpKind {
 #[derive(Debug)]
 struct SessionInfo {
     id: String,
+    format: LogFormat,
     first_ts: DateTime<Utc>,
     last_ts: DateTime<Utc>,
     op_count: usize,
@@ -217,7 +237,51 @@ fn should_include_path(path: &str, includes: &[Pattern], excludes: &[Pattern], i
     true
 }
 
-fn extract(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_external: bool, repo_path: &Path, cutoff: Option<DateTime<Utc>>, verbose: bool) -> Result<(String, DateTime<Utc>, DateTime<Utc>, Vec<Op>)> {
+/// Detect log format from first few lines of a session file
+fn detect_log_format(path: &Path) -> LogFormat {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return LogFormat::Unknown,
+    };
+    let rdr = BufReader::new(file);
+    
+    for line in rdr.lines().take(50).flatten() {
+        if line.trim().is_empty() { continue; }
+        
+        // Claude Code markers: "type":"assistant" with tool_use, or has "version" field with semver
+        if line.contains(r#""type":"assistant""#) || line.contains(r#""type":"tool_use""#) {
+            return LogFormat::ClaudeCode;
+        }
+        
+        // OpenClaw markers: "type":"message" with toolCall
+        if line.contains(r#""type":"message""#) || line.contains(r#""type":"toolCall""#) {
+            return LogFormat::OpenClaw;
+        }
+        
+        // Claude Code also has version field like "version":"2.1.39"
+        if line.contains(r#""version":"2."#) || line.contains(r#""version":"3."#) {
+            return LogFormat::ClaudeCode;
+        }
+        
+        // OpenClaw session entry
+        if line.contains(r#""type":"session""#) || line.contains(r#""type":"model_change""#) {
+            return LogFormat::OpenClaw;
+        }
+    }
+    
+    LogFormat::Unknown
+}
+
+fn extract(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_external: bool, repo_path: &Path, cutoff: Option<DateTime<Utc>>, verbose: bool) -> Result<(String, LogFormat, DateTime<Utc>, DateTime<Utc>, Vec<Op>)> {
+    let format = detect_log_format(path);
+    
+    match format {
+        LogFormat::ClaudeCode => extract_claude_code(path, includes, excludes, ignore_external, repo_path, cutoff, verbose),
+        LogFormat::OpenClaw | LogFormat::Unknown => extract_openclaw(path, includes, excludes, ignore_external, repo_path, cutoff, verbose, format),
+    }
+}
+
+fn extract_openclaw(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_external: bool, repo_path: &Path, cutoff: Option<DateTime<Utc>>, verbose: bool, format: LogFormat) -> Result<(String, LogFormat, DateTime<Utc>, DateTime<Utc>, Vec<Op>)> {
     let file = File::open(path).with_context(|| format!("open: {}", path.display()))?;
     let rdr = BufReader::new(file);
     
@@ -299,7 +363,138 @@ fn extract(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_exter
     
     let ft = first_ts.ok_or_else(|| anyhow::anyhow!("no timestamps in {}", path.display()))?;
     let lt = last_ts.unwrap_or(ft);
-    Ok((sid, ft, lt, ops))
+    Ok((sid, format, ft, lt, ops))
+}
+
+/// Extract operations from Claude Code session logs
+fn extract_claude_code(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_external: bool, repo_path: &Path, cutoff: Option<DateTime<Utc>>, verbose: bool) -> Result<(String, LogFormat, DateTime<Utc>, DateTime<Utc>, Vec<Op>)> {
+    let file = File::open(path).with_context(|| format!("open: {}", path.display()))?;
+    let rdr = BufReader::new(file);
+    
+    let mut ops = Vec::new();
+    let mut model = "unknown".to_string();
+    let mut sid = path.file_stem().and_then(|s| s.to_str()).unwrap_or("x").to_string();
+    let mut cwd: Option<String> = None;
+    let mut first_ts: Option<DateTime<Utc>> = None;
+    let mut last_ts: Option<DateTime<Utc>> = None;
+
+    for line in rdr.lines().flatten() {
+        if line.trim().is_empty() { continue; }
+        let e: serde_json::Value = match serde_json::from_str(&line) { Ok(e) => e, Err(_) => continue };
+        
+        // Extract timestamp
+        let ts_str = e.get("timestamp").and_then(|v| v.as_str());
+        let (ts, tz) = match ts_str.and_then(parse_ts) {
+            Some(t) => t, 
+            None => continue
+        };
+        
+        // Stop at cutoff if specified
+        if let Some(cut) = cutoff {
+            if ts > cut { continue; }
+        }
+        
+        if first_ts.is_none() { first_ts = Some(ts); }
+        last_ts = Some(ts);
+        
+        // Extract session ID from message
+        if let Some(session_id) = e.get("sessionId").and_then(|v| v.as_str()) {
+            sid = session_id.to_string();
+        }
+        
+        // Extract working directory
+        if let Some(c) = e.get("cwd").and_then(|v| v.as_str()) {
+            cwd = Some(c.to_string());
+        }
+        
+        // Only process assistant messages
+        let typ = e.get("type").and_then(|v| v.as_str());
+        if typ != Some("assistant") { continue; }
+        
+        // Extract model
+        if let Some(msg) = e.get("message") {
+            if let Some(m) = msg.get("model").and_then(|v| v.as_str()) {
+                model = m.to_string();
+            }
+            
+            // Process tool_use blocks in content
+            if let Some(content) = msg.get("content").and_then(|v| v.as_array()) {
+                for blk in content {
+                    let blk_type = blk.get("type").and_then(|v| v.as_str());
+                    if blk_type != Some("tool_use") { continue; }
+                    
+                    let name = blk.get("name").and_then(|v| v.as_str()).map(|s| s.to_lowercase());
+                    let input = match blk.get("input") { Some(i) => i, None => continue };
+                    let tool_name = name.as_deref().unwrap_or("");
+                    
+                    let fpath = input.get("file_path").or(input.get("path")).and_then(|v| v.as_str());
+                    
+                    // Resolve relative paths against cwd
+                    let resolved_path = match fpath {
+                        Some(p) if !Path::new(p).is_absolute() => {
+                            if let Some(ref c) = cwd {
+                                PathBuf::from(c).join(p).to_string_lossy().to_string()
+                            } else {
+                                p.to_string()
+                            }
+                        }
+                        Some(p) => p.to_string(),
+                        None => continue,
+                    };
+                    
+                    match tool_name {
+                        "write" => {
+                            let content = match input.get("content").and_then(|v| v.as_str()) {
+                                Some(c) => c,
+                                None => continue,
+                            };
+                            if !should_include_path(&resolved_path, includes, excludes, ignore_external, repo_path) { continue; }
+                            if verbose { eprintln!("  [{}] write: {}", ts.format("%H:%M:%S"), resolved_path); }
+                            ops.push(Op { ts, tz, model: model.clone(), session: sid.clone(), kind: OpKind::Write(content.into()), path: resolved_path });
+                        }
+                        "edit" => {
+                            let old = input.get("old_string").and_then(|v| v.as_str());
+                            let new = input.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+                            let old_text = match old { Some(o) => o, None => continue };
+                            if !should_include_path(&resolved_path, includes, excludes, ignore_external, repo_path) { continue; }
+                            if verbose { eprintln!("  [{}] edit: {}", ts.format("%H:%M:%S"), resolved_path); }
+                            ops.push(Op { ts, tz, model: model.clone(), session: sid.clone(), kind: OpKind::Edit { old: old_text.into(), new: new.into() }, path: resolved_path });
+                        }
+                        "multiedit" => {
+                            // MultiEdit: array of edits, all with same timestamp
+                            if let Some(edits) = input.get("edits").and_then(|v| v.as_array()) {
+                                for edit in edits {
+                                    let edit_path = edit.get("file_path").or(edit.get("path")).and_then(|v| v.as_str());
+                                    let edit_resolved = match edit_path {
+                                        Some(p) if !Path::new(p).is_absolute() => {
+                                            if let Some(ref c) = cwd {
+                                                PathBuf::from(c).join(p).to_string_lossy().to_string()
+                                            } else {
+                                                p.to_string()
+                                            }
+                                        }
+                                        Some(p) => p.to_string(),
+                                        None => continue,
+                                    };
+                                    let old = edit.get("old_string").and_then(|v| v.as_str());
+                                    let new = edit.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+                                    let old_text = match old { Some(o) => o, None => continue };
+                                    if !should_include_path(&edit_resolved, includes, excludes, ignore_external, repo_path) { continue; }
+                                    if verbose { eprintln!("  [{}] edit (multi): {}", ts.format("%H:%M:%S"), edit_resolved); }
+                                    ops.push(Op { ts, tz, model: model.clone(), session: sid.clone(), kind: OpKind::Edit { old: old_text.into(), new: new.into() }, path: edit_resolved });
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    
+    let ft = first_ts.ok_or_else(|| anyhow::anyhow!("no timestamps in {}", path.display()))?;
+    let lt = last_ts.unwrap_or(ft);
+    Ok((sid, LogFormat::ClaudeCode, ft, lt, ops))
 }
 
 fn sanitize(p: &Path) -> PathBuf {
