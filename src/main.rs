@@ -237,6 +237,41 @@ fn should_include_path(path: &str, includes: &[Pattern], excludes: &[Pattern], i
     true
 }
 
+/// Detect log format from first few lines of a session file
+fn detect_log_format(path: &Path) -> LogFormat {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return LogFormat::Unknown,
+    };
+    let rdr = BufReader::new(file);
+    
+    for line in rdr.lines().take(50).flatten() {
+        if line.trim().is_empty() { continue; }
+        
+        // Claude Code markers: "type":"assistant" with tool_use, or has "version" field with semver
+        if line.contains(r#""type":"assistant""#) || line.contains(r#""type":"tool_use""#) {
+            return LogFormat::ClaudeCode;
+        }
+        
+        // OpenClaw markers: "type":"message" with toolCall
+        if line.contains(r#""type":"message""#) || line.contains(r#""type":"toolCall""#) {
+            return LogFormat::OpenClaw;
+        }
+        
+        // Claude Code also has version field like "version":"2.1.39"
+        if line.contains(r#""version":"2."#) || line.contains(r#""version":"3."#) {
+            return LogFormat::ClaudeCode;
+        }
+        
+        // OpenClaw session entry
+        if line.contains(r#""type":"session""#) || line.contains(r#""type":"model_change""#) {
+            return LogFormat::OpenClaw;
+        }
+    }
+    
+    LogFormat::Unknown
+}
+
 fn extract(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_external: bool, repo_path: &Path, cutoff: Option<DateTime<Utc>>, verbose: bool) -> Result<(String, DateTime<Utc>, DateTime<Utc>, Vec<Op>)> {
     let file = File::open(path).with_context(|| format!("open: {}", path.display()))?;
     let rdr = BufReader::new(file);
