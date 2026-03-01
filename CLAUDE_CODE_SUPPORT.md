@@ -208,13 +208,15 @@ Supports both OpenClaw (.openclaw/agents/*/sessions/) and Claude Code
 3. **Integration tests**: Recovery from mixed sessions
 4. **Real-world test**: Recover this crate's own history from both log sources (we have Claude Code sessions in `~/.claude/projects/-Users-matte-jeb/`)
 
-## Implementation Order
+## Implementation Status
 
-1. Add format detection (+ show format in output immediately for debugging)
-2. Add `--claude-sessions-dir` flag and scanning (can test discovery independently)
-3. Implement Claude Code parser (unified `parse_line` with format match, not traits)
-4. Test with real mixed recovery
-5. Update documentation
+✅ **COMPLETE** (2026-03-01)
+
+1. ✅ Add format detection (`detect_log_format()` based on JSONL markers)
+2. ✅ Add `--claude-sessions-dir` flag and scanning (recursive project subdirs)
+3. ✅ Implement Claude Code parser (`extract_claude_code()`)
+4. ✅ Test with real mixed recovery (109 commits from mixed sessions)
+5. ✅ Update documentation
 
 **Deferred:**
 - Trait abstraction (reconsider if third format appears)
