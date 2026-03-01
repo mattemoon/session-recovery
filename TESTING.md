@@ -73,16 +73,27 @@
 4. **Point-in-time cutoff** — Verified operations stop at specified timestamp
 5. **Preview vs Apply** — Confirmed no changes without `--confirm`
 
+### Additional Tests Performed (2026-02-28)
+
+#### `.git` Sanitization
+- ✅ Paths containing `.git` are rewritten to `_.git`
+- ✅ Works for `.git/config` → `_.git/config`
+- ✅ Works for nested paths: `src/.git/hooks/pre-commit` → `src/_.git/hooks/pre-commit`
+- ✅ Real `.git` directory remains untouched
+
+#### Path Remapping
+- ✅ `--strip-prefix "/other/worktree/"` correctly removes prefix
+- ✅ `/other/worktree/src/main.rs` becomes `src/main.rs`
+
 ## Not Yet Tested
 
 - [ ] `--exclude` patterns
+- [ ] `--add-prefix` (tested `--strip-prefix` only)
 - [ ] `--no-collapse` flag
 - [ ] Commit collapsing behavior
-- [ ] `.git` path sanitization (_.git)
 - [ ] Directory-to-file replacement
 - [ ] Malformed session log handling
 - [ ] Empty recovery (no operations) error
-- [ ] Path remapping (`--strip-prefix`, `--add-prefix`)
 - [ ] Multiple sessions with overlapping timestamps
 - [ ] Very large sessions (performance)
 - [ ] Non-Anthropic model author formatting
