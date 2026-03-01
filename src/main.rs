@@ -959,12 +959,19 @@ fn main() -> Result<()> {
     
     // Scan or collect sessions
     let sessions: Vec<PathBuf> = if args.scan_sessions || args.sessions.is_empty() || at_path.is_some() {
-        let dir = expand_home(&args.sessions_dir);
-        if !dir.exists() { 
-            bail!("Sessions directory not found: {}\n\nTip: Use --sessions-dir to specify location", dir.display()); 
+        let openclaw_dir = expand_home(&args.sessions_dir);
+        let claude_code_dir = expand_home(&args.claude_sessions_dir);
+        
+        if !openclaw_dir.exists() && !claude_code_dir.exists() { 
+            bail!("No session directories found.\n\nTried:\n  OpenClaw: {}\n  Claude Code: {}\n\nTip: Use --sessions-dir or --claude-sessions-dir to specify locations", 
+                openclaw_dir.display(), claude_code_dir.display()); 
         }
-        if args.verbose { eprintln!("Scanning sessions in {}...", dir.display()); }
-        scan_sessions(&dir, &effective_includes, since, until, args.verbose)?
+        if args.verbose { 
+            eprintln!("Scanning sessions..."); 
+            if openclaw_dir.exists() { eprintln!("  OpenClaw: {}", openclaw_dir.display()); }
+            if claude_code_dir.exists() { eprintln!("  Claude Code: {}", claude_code_dir.display()); }
+        }
+        scan_sessions(&openclaw_dir, &claude_code_dir, &effective_includes, since, until, args.verbose)?
     } else {
         args.sessions.iter().filter_map(|p| if p.exists() { Some(p.clone()) } else { None }).collect()
     };
