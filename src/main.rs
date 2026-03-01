@@ -1211,7 +1211,7 @@ fn main() -> Result<()> {
                 let msg = if ok { 
                     format!("edit: {}", ps) 
                 } else { 
-                    format!("⚠️ edit (appended): {}", ps) 
+                    format!("⚠️ edit (mismatched): {}", ps) 
                 };
                 let pc = repo.find_commit(parent.unwrap())?;
                 let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
@@ -1222,7 +1222,7 @@ fn main() -> Result<()> {
                     warnings.push(Warning {
                         path: ps.clone(),
                         ts: op.ts,
-                        message: "Edit target not found, content appended".into(),
+                        message: "Edit target not found, content appended as mismatched".into(),
                         commit: Some(oid),
                     });
                 }
