@@ -895,7 +895,7 @@ fn main() -> Result<()> {
     let mut all_ops = Vec::new();
     
     for sp in &sessions {
-        let (sid, ft, lt, ops) = extract(sp, &effective_includes, &excludes, args.ignore_external, &repo_path, cutoff, args.verbose)?;
+        let (sid, format, ft, lt, ops) = extract(sp, &effective_includes, &excludes, args.ignore_external, &repo_path, cutoff, args.verbose)?;
         
         // Track file stats
         for op in &ops {
@@ -906,6 +906,7 @@ fn main() -> Result<()> {
         
         session_infos.push(SessionInfo {
             id: sid.clone(),
+            format,
             first_ts: ft,
             last_ts: lt,
             op_count: ops.len(),
