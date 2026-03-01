@@ -584,7 +584,7 @@ fn print_warnings(warnings: &[Warning]) {
     eprintln!();
 }
 
-fn print_merge_state(branch: &str, last_commit: Oid, merge_msg: &str, errors: bool) {
+fn print_merge_state(branch: &str, last_commit: Oid, _merge_msg: &str, errors: bool) {
     eprintln!("Branch created: {} @ {}", branch, short_oid(last_commit));
     eprintln!();
     eprintln!("Merge State");
