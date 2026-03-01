@@ -584,13 +584,19 @@ fn print_warnings(warnings: &[Warning]) {
     eprintln!();
 }
 
-fn print_merge_state(branch: &str, last_commit: Oid, _merge_msg: &str, errors: bool) {
+fn print_merge_state(branch: &str, last_commit: Oid, _merge_msg: &str, errors: bool, strategy: &str) {
     eprintln!("Branch created: {} @ {}", branch, short_oid(last_commit));
     eprintln!();
     eprintln!("Merge State");
     eprintln!("  Repository is now in an uncommitted merge state.");
-    eprintln!("  Current tree:    unchanged (--strategy ours)");
-    eprintln!("  Recovery branch: {} (merged for history only)", branch);
+    let tree_desc = if strategy == "theirs" {
+        "from recovery branch (recovered files)"
+    } else {
+        "unchanged (current files preserved)"
+    };
+    eprintln!("  Current tree:    {}", tree_desc);
+    eprintln!("  Strategy:        -s {}", strategy);
+    eprintln!("  Recovery branch: {}", branch);
     eprintln!();
     eprintln!("  To complete:     git commit");
     eprintln!("  To abort:        git merge --abort");
