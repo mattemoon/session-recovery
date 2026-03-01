@@ -1514,29 +1514,6 @@ fn main() -> Result<()> {
     
     Ok(())
 }
-            }
-        }
-    }
-    
-    // Update session_infos with commit IDs
-    for si in &mut session_infos {
-        if let Some((first, last)) = session_commits.get(&si.id) {
-            si.first_commit = *first;
-            si.last_commit = *last;
-        }
-    }
-    
-    // Get first and last commits overall
-    let first_commit = session_infos.first().and_then(|s| s.first_commit);
-    let last_commit = parent;
-    
-    // Print results
-    print_processing_result(&session_infos, total_commits, &warnings);
-    print_warnings(&warnings);
-    
-    if !args.confirm {
-        print_preview_result(file_ops, total_commits, first_commit, last_commit);
-        return Ok(());
     }
     
     // Set up merge state (--confirm mode only)
