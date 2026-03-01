@@ -1035,7 +1035,14 @@ fn main() -> Result<()> {
             last_commit: None,
         });
         
-        all_ops.push(Op { ts: ft, tz: 0, model: "system".into(), session: sid.clone(), kind: OpKind::Start, path: String::new() });
+        // Store format prefix for commit messages
+        let format_name = match format {
+            LogFormat::ClaudeCode => "Claude Code",
+            LogFormat::OpenClaw => "OpenClaw",
+            LogFormat::Unknown => "unknown",
+        };
+        
+        all_ops.push(Op { ts: ft, tz: 0, model: format_name.into(), session: sid.clone(), kind: OpKind::Start, path: String::new() });
         for op in ops {
             all_ops.push(op);
         }
