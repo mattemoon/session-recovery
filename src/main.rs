@@ -1123,6 +1123,71 @@ fn main() -> Result<()> {
         })
         .collect();
     
+    // Group operations into consolidation batches (if enabled)
+    // A batch is a sequence of file ops with:
+    // - Time gap < 2048 seconds between consecutive ops
+    // - Same session
+    // - No line conflicts (added lines not also removed)
+    let batches: Vec<Vec<usize>> = if args.no_collapse {
+        // No consolidation: each file op is its own batch
+        all_ops.iter().enumerate()
+            .filter(|(_, o)| matches!(o.kind, OpKind::Write(_) | OpKind::Edit { .. }))
+            .map(|(i, _)| vec![i])
+            .collect()
+    } else {
+        // Group into batches
+        let mut result: Vec<Vec<usize>> = Vec::new();
+        let mut current_batch: Vec<usize> = Vec::new();
+        let mut last_ts: Option<i64> = None;
+        let mut last_session: Option<&str> = None;
+        
+        for (i, op) in all_ops.iter().enumerate() {
+            match &op.kind {
+                OpKind::Write(_) | OpKind::Edit { .. } => {
+                    let can_extend = match (last_ts, last_session) {
+                        (Some(lt), Some(ls)) => {
+                            consolidate::can_consolidate(lt, op.ts.timestamp(), ls, &op.session, CONSOLIDATION_MAX_GAP_SECONDS)
+                        }
+                        _ => false,
+                    };
+                    
+                    if can_extend {
+                        current_batch.push(i);
+                    } else {
+                        if !current_batch.is_empty() {
+                            result.push(current_batch);
+                        }
+                        current_batch = vec![i];
+                    }
+                    last_ts = Some(op.ts.timestamp());
+                    last_session = Some(&op.session);
+                }
+                OpKind::Start | OpKind::End => {
+                    // Session boundaries break batches
+                    if !current_batch.is_empty() {
+                        result.push(current_batch);
+                        current_batch = Vec::new();
+                    }
+                    last_ts = None;
+                    last_session = None;
+                }
+            }
+        }
+        if !current_batch.is_empty() {
+            result.push(current_batch);
+        }
+        result
+    };
+    
+    if args.verbose {
+        let consolidated_count = batches.iter().filter(|b| b.len() > 1).count();
+        if consolidated_count > 0 {
+            eprintln!("Consolidation: {} operations → {} batches ({} consolidated)", 
+                file_ops, batches.len(), consolidated_count);
+            eprintln!();
+        }
+    }
+    
     // Process operations and create commits
     let mut files: HashMap<String, String> = HashMap::new();
     let mut tree_id: Option<Oid> = None;
@@ -1132,6 +1197,7 @@ fn main() -> Result<()> {
     let mut seen_sessions: HashSet<String> = HashSet::new();
     let mut session_commits: HashMap<String, (Option<Oid>, Option<Oid>)> = HashMap::new();
     let branch_ref = format!("refs/heads/{}", branch);
+    let mut batch_iter = batches.iter().peekable();
     
     for op in &all_ops {
         match &op.kind {
