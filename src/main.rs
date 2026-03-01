@@ -586,11 +586,13 @@ fn version(m: &str, v: &str) -> String {
 
 fn apply_edit(cur: &str, old: &str, new: &str) -> (String, bool) {
     if cur.contains(old) { return (cur.replacen(old, new, 1), true); }
+    // Mismatch: append with separators and trailing blank line
     let mut r = cur.to_string();
     if !r.is_empty() && !r.ends_with('\n') { r.push('\n'); }
     r.push_str("\n\n\n");
     r.push_str(new);
     if !new.ends_with('\n') { r.push('\n'); }
+    r.push('\n'); // trailing blank line for mismatched edits
     (r, false)
 }
 
