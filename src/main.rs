@@ -481,7 +481,7 @@ fn format_date_range(first: DateTime<Utc>, last: DateTime<Utc>) -> String {
     if f == l { f } else { format!("{} to {}", f, l) }
 }
 
-fn print_header(args: &Args, branch: &str, since: DateTime<Utc>, until: DateTime<Utc>) {
+fn print_header(args: &Args, branch: &str, _since: DateTime<Utc>, _until: DateTime<Utc>) {
     eprintln!("session-recovery v{}", env!("CARGO_PKG_VERSION"));
     eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     eprintln!();
