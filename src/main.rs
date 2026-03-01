@@ -288,10 +288,10 @@ fn extract(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_exter
                     if !should_include_path(p, includes, excludes, ignore_external, repo_path) { continue; }
                     if verbose { eprintln!("  [{}] edit: {}", ts.format("%H:%M:%S"), p); }
                     ops.push(Op { ts, tz, model: model.clone(), session: sid.clone(), kind: OpKind::Edit { old: o.into(), new: new.into() }, path: p.into() });
-                    last_was_user = false;
+                    _last_was_user = false;
                 }
                 _ => {
-                    if !is_safe_tool(tool_name) { last_was_user = true; }
+                    if !is_safe_tool(tool_name) { _last_was_user = true; }
                 }
             }
         }
@@ -949,3 +949,10 @@ fn main() -> Result<()> {
     
     Ok(())
 }
+
+
+
+                    if verbose { eprintln!("  [{}] write: {}", ts.format("%H:%M:%S"), p); }
+                    ops.push(Op { ts, tz, model: model.clone(), session: sid.clone(), kind: OpKind::Write(c.into()), path: p.into() });
+                    _last_was_user = false;
+
