@@ -537,7 +537,7 @@ fn print_sessions(session_infos: &[SessionInfo]) {
     eprintln!();
 }
 
-fn print_files(file_infos: &BTreeMap<String, FileInfo>, verbose: bool) {
+fn print_files(file_infos: &BTreeMap<String, FileInfo>, _verbose: bool) {
     eprintln!("Files to Recover");
     for (path, info) in file_infos {
         let session_word = if info.sessions.len() == 1 { "session" } else { "sessions" };
