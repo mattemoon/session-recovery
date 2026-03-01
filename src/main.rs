@@ -144,6 +144,7 @@ enum OpKind {
 #[derive(Debug)]
 struct SessionInfo {
     id: String,
+    format: LogFormat,
     first_ts: DateTime<Utc>,
     last_ts: DateTime<Utc>,
     op_count: usize,
