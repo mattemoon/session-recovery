@@ -4,6 +4,8 @@
 //! See OUTPUT_FORMAT.md for CLI output design.
 //! See CLAUDE_CODE_SUPPORT.md for multi-format support.
 
+mod consolidate;
+
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use clap::Parser;
