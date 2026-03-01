@@ -23,6 +23,41 @@ const DEFAULT_SINCE_SECONDS: i64 = 3 * 365 * 24 * 60 * 60;
 /// Max gap between operations for consolidation (64 * 32 = 2048 seconds ≈ 34 minutes)
 const CONSOLIDATION_MAX_GAP_SECONDS: i64 = 64 * 32;
 
+/// Format a consolidated commit message with deduplicated operations
+fn format_batch_commit_message(
+    ops: &[(String, &str, String)], // (path, kind, session)
+    session_formats: &HashMap<String, String>,
+) -> String {
+    use std::collections::BTreeMap;
+    
+    // Count operations per (kind, path) pair, preserving order with BTreeMap
+    let mut op_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for (path, kind, _) in ops {
+        let key = (kind.to_string(), path.clone());
+        *op_counts.entry(key).or_insert(0) += 1;
+    }
+    
+    let mut msg = String::new();
+    for ((kind, path), count) in &op_counts {
+        if *count > 1 {
+            msg.push_str(&format!("{}: {} (×{})\n", kind, path, count));
+        } else {
+            msg.push_str(&format!("{}: {}\n", kind, path));
+        }
+    }
+    
+    msg.push('\n');
+    
+    // Deduplicated session IDs
+    let sessions: HashSet<_> = ops.iter().map(|(_, _, s)| s.as_str()).collect();
+    for session in sessions {
+        let format_name = session_formats.get(session).map(|s| s.as_str()).unwrap_or("Session");
+        msg.push_str(&format!("{} session {}\n", format_name, session));
+    }
+    
+    msg
+}
+
 /// Session log format
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LogFormat {
