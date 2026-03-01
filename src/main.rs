@@ -1307,18 +1307,8 @@ fn main() -> Result<()> {
                         let format_name = session_formats.get(&op.session).map(|s| s.as_str()).unwrap_or("Session");
                         format!("write: {}\n\n{} session {}", ps, format_name, op.session)
                     } else {
-                        // Multiple ops: consolidated message
-                        let mut msg = String::new();
-                        for (path, kind, _) in &current_batch_ops {
-                            msg.push_str(&format!("{}: {}\n", kind, path));
-                        }
-                        msg.push('\n');
-                        let sessions: HashSet<_> = current_batch_ops.iter().map(|(_, _, s)| s.as_str()).collect();
-                        for session in sessions {
-                            let format_name = session_formats.get(session).map(|s| s.as_str()).unwrap_or("Session");
-                            msg.push_str(&format!("{} session {}\n", format_name, session));
-                        }
-                        msg
+                        // Multiple ops: consolidated message with deduplication
+                        format_batch_commit_message(&current_batch_ops, &session_formats)
                     };
                     
                     let pc = repo.find_commit(parent.unwrap())?;
