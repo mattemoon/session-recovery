@@ -140,8 +140,8 @@ Claude Code organizes sessions by project. Add project-aware filtering:
 | Model | `message.model` or `modelId` | `message.model` |
 | Write path | `arguments.file_path` or `.path` | `input.file_path` |
 | Write content | `arguments.content` | `input.content` |
-| Edit old | `arguments.oldText` or `.old_string` | `input.old_str` |
-| Edit new | `arguments.newText` or `.new_string` | `input.new_str` |
+| Edit old | `arguments.oldText` or `.old_string` | `input.old_string` |
+| Edit new | `arguments.newText` or `.new_string` | `input.new_string` |
 | Tool type marker | `type:"toolCall"` | `type:"tool_use"` |
 | Working dir | (inferred from paths) | `cwd` field |
 
@@ -153,7 +153,21 @@ Claude Code has additional tools we should consider:
 - **Bash/Shell**: Could track file operations from shell commands (future enhancement)
 - **TodoWrite/TodoRead**: Not file operations, ignore
 
-## Open Questions
+## Edge Cases
+
+1. **Truncated/streaming tool calls** — Claude Code has `content_block_start`/`content_block_delta` streaming entries. Skip these; only process complete `tool_use` blocks.
+
+2. **Empty/malformed JSONL lines** — Skip gracefully, log warning count at end.
+
+3. **Session ID extraction timing** — Claude Code has `sessionId` per-message (no upfront session entry like OpenClaw). Extract from first parseable message.
+
+4. **Symlinked session directories** — Follow symlinks (standard fs behavior).
+
+5. **Path normalization** — Canonicalize paths after `cwd` resolution before `--ignore-external` comparison.
+
+6. **MultiEdit atomicity** — Extract as sequence of Edit ops with same timestamp.
+
+## Open Questions (Resolved)
 
 1. **Should we merge sessions from both sources into a single recovery branch?**
    - Yes, chronologically interleaved, each commit attributed to its source session
@@ -165,17 +179,19 @@ Claude Code has additional tools we should consider:
    - Yes, when path is relative, resolve against `cwd` from the message
 
 4. **Project slug → path mapping?**
-   - The slug `-Users-matte-jeb` maps to `/Users/matte/jeb`
-   - Use this for `--ignore-external` when project root can be inferred
+   - Not needed initially; `cwd` in messages provides real paths
+   - Revisit if `--ignore-external` has issues
 
 ## CLI Changes
 
 ### New flags:
 ```
 --claude-sessions-dir <PATH>   Claude Code projects directory [default: ~/.claude/projects/]
---claude-project <SLUG>        Filter to specific Claude Code project
---log-format <auto|openclaw|claude-code>   Force log format [default: auto]
 ```
+
+**Deferred (add if needed):**
+- `--claude-project <SLUG>` — use `--include` glob instead
+- `--log-format <auto|openclaw|claude-code>` — auto-detection should be reliable
 
 ### Updated help text:
 ```
@@ -188,25 +204,27 @@ Supports both OpenClaw (.openclaw/agents/*/sessions/) and Claude Code
 ## Testing Strategy
 
 1. **Unit tests**: Parse sample logs from both formats
-2. **Integration tests**: Recovery from mixed sessions
-3. **Real-world test**: Recover this crate's own history from both log sources (we have Claude Code sessions in `~/.claude/projects/-Users-matte-jeb/`)
+2. **Corrupt/incomplete log test**: Malformed JSON, truncated files, empty lines
+3. **Integration tests**: Recovery from mixed sessions
+4. **Real-world test**: Recover this crate's own history from both log sources (we have Claude Code sessions in `~/.claude/projects/-Users-matte-jeb/`)
 
 ## Implementation Order
 
-1. Add format detection
-2. Refactor OpenClaw parser into trait impl
-3. Implement Claude Code parser
-4. Add `--claude-sessions-dir` flag and scanning
-5. Update output to show log format per session
-6. Add `--claude-project` filter
-7. Update documentation
-8. Test with real mixed recovery
+1. Add format detection (+ show format in output immediately for debugging)
+2. Add `--claude-sessions-dir` flag and scanning (can test discovery independently)
+3. Implement Claude Code parser (unified `parse_line` with format match, not traits)
+4. Test with real mixed recovery
+5. Update documentation
+
+**Deferred:**
+- Trait abstraction (reconsider if third format appears)
+- `--claude-project` filter (use `--include` glob)
+- `--log-format` override (rely on auto-detection)
 
 ## Commit Plan
 
 1. `session-recovery: add log format detection`
-2. `session-recovery: refactor parser into trait`
+2. `session-recovery: add --claude-sessions-dir scanning`
 3. `session-recovery: implement Claude Code parser`
-4. `session-recovery: add --claude-sessions-dir scanning`
-5. `session-recovery: unified mixed-source recovery`
-6. `session-recovery: update docs for Claude Code support`
+4. `session-recovery: mixed-source recovery`
+5. `session-recovery: update docs for Claude Code support`
