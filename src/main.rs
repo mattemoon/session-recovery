@@ -71,6 +71,14 @@ struct Args {
     #[arg(long)]
     no_collapse: bool,
 
+    /// Remove this prefix from file paths
+    #[arg(long)]
+    strip_prefix: Option<String>,
+
+    /// Add this prefix to file paths
+    #[arg(long)]
+    add_prefix: Option<String>,
+
     /// Actually apply the recovery (default: preview only)
     #[arg(long, visible_alias = "yes")]
     confirm: bool,
