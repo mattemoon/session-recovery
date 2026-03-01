@@ -1,6 +1,8 @@
 # session-recovery
 
-Recover file history from OpenClaw session logs as git commits.
+Recover file history from **OpenClaw** and **Claude Code** session logs as git commits.
+
+Supports both log formats and can recover mixed sessions from both tools.
 
 Inspired by [claude-file-recovery](https://github.com/hjtenklooster/claude-file-recovery).
 
