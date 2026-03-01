@@ -209,14 +209,16 @@ Supports both OpenClaw (.openclaw/agents/*/sessions/) and Claude Code
 
 ## Implementation Order
 
-1. Add format detection
-2. Refactor OpenClaw parser into trait impl
-3. Implement Claude Code parser
-4. Add `--claude-sessions-dir` flag and scanning
-5. Update output to show log format per session
-6. Add `--claude-project` filter
-7. Update documentation
-8. Test with real mixed recovery
+1. Add format detection (+ show format in output immediately for debugging)
+2. Add `--claude-sessions-dir` flag and scanning (can test discovery independently)
+3. Implement Claude Code parser (unified `parse_line` with format match, not traits)
+4. Test with real mixed recovery
+5. Update documentation
+
+**Deferred:**
+- Trait abstraction (reconsider if third format appears)
+- `--claude-project` filter (use `--include` glob)
+- `--log-format` override (rely on auto-detection)
 
 ## Commit Plan
 
