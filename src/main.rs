@@ -969,21 +969,29 @@ fn main() -> Result<()> {
         effective_includes.push(Pattern::new(&format!("*{}*", p)).unwrap_or_else(|_| Pattern::new(p).unwrap()));
     }
     
+    // Validate mutually exclusive flags
+    if args.openclaw_only && args.claude_only {
+        bail!("Cannot use both --openclaw-only and --claude-only");
+    }
+    
     // Scan or collect sessions
     let sessions: Vec<PathBuf> = if args.scan_sessions || args.sessions.is_empty() || at_path.is_some() {
         let openclaw_dir = expand_home(&args.sessions_dir);
         let claude_code_dir = expand_home(&args.claude_sessions_dir);
         
-        if !openclaw_dir.exists() && !claude_code_dir.exists() { 
+        let check_openclaw = !args.claude_only && openclaw_dir.exists();
+        let check_claude = !args.openclaw_only && claude_code_dir.exists();
+        
+        if !check_openclaw && !check_claude { 
             bail!("No session directories found.\n\nTried:\n  OpenClaw: {}\n  Claude Code: {}\n\nTip: Use --sessions-dir or --claude-sessions-dir to specify locations", 
                 openclaw_dir.display(), claude_code_dir.display()); 
         }
         if args.verbose { 
             eprintln!("Scanning sessions..."); 
-            if openclaw_dir.exists() { eprintln!("  OpenClaw: {}", openclaw_dir.display()); }
-            if claude_code_dir.exists() { eprintln!("  Claude Code: {}", claude_code_dir.display()); }
+            if check_openclaw { eprintln!("  OpenClaw: {}", openclaw_dir.display()); }
+            if check_claude { eprintln!("  Claude Code: {}", claude_code_dir.display()); }
         }
-        scan_sessions(&openclaw_dir, &claude_code_dir, &effective_includes, since, until, args.verbose)?
+        scan_sessions(&openclaw_dir, &claude_code_dir, &effective_includes, since, until, args.verbose, args.openclaw_only, args.claude_only)?
     } else {
         args.sessions.iter().filter_map(|p| if p.exists() { Some(p.clone()) } else { None }).collect()
     };
