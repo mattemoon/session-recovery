@@ -861,8 +861,15 @@ fn print_processing_result(session_infos: &[SessionInfo], total_commits: usize, 
     }
     eprintln!();
     
+    // Count by format
+    let openclaw_count = session_infos.iter().filter(|s| s.format == LogFormat::OpenClaw).count();
+    let claude_code_count = session_infos.iter().filter(|s| s.format == LogFormat::ClaudeCode).count();
+    
     eprintln!("Summary");
     eprintln!("  Total commits:   {} (across {} sessions)", total_commits, session_infos.len());
+    if openclaw_count > 0 && claude_code_count > 0 {
+        eprintln!("  Sources:         {} OpenClaw, {} Claude Code", openclaw_count, claude_code_count);
+    }
     let files_count = session_infos.iter().map(|s| s.op_count).sum::<usize>();
     eprintln!("  File operations: {}", files_count);
     if !warnings.is_empty() {
