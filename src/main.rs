@@ -621,39 +621,43 @@ fn verify_clean(repo: &Repository) -> Result<()> {
     Ok(())
 }
 
-fn scan_sessions(dir: &Path, includes: &[Pattern], since: DateTime<Utc>, until: DateTime<Utc>, verbose: bool) -> Result<Vec<PathBuf>> {
-    let mut sessions = Vec::new();
+/// Check if a session file has matching operations (format-aware)
+fn session_has_matching_ops(path: &Path, includes: &[Pattern], since: DateTime<Utc>, until: DateTime<Utc>) -> bool {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let rdr = BufReader::new(file);
+    let format = detect_log_format(path);
+    let mut has_ops = false;
+    let mut in_range = false;
     
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") { continue; }
+    for line in rdr.lines().flatten().take(10000) {
+        if line.trim().is_empty() { continue; }
+        let e: serde_json::Value = match serde_json::from_str(&line) { Ok(e) => e, Err(_) => continue };
         
-        let file = File::open(&path)?;
-        let rdr = BufReader::new(file);
-        let mut has_ops = false;
-        let mut in_range = false;
-        
-        for line in rdr.lines().flatten().take(10000) {
-            if line.trim().is_empty() { continue; }
-            let e: Entry = match serde_json::from_str(&line) { Ok(e) => e, Err(_) => continue };
-            
-            if let Some((ts, _)) = e.timestamp.as_deref().and_then(parse_ts) {
+        // Check timestamp
+        if let Some(ts_str) = e.get("timestamp").and_then(|v| v.as_str()) {
+            if let Some((ts, _)) = parse_ts(ts_str) {
                 if ts >= since && ts <= until { in_range = true; }
             }
-            
-            if e.typ == "message" {
-                if let Some(msg) = &e.message {
-                    if let Some(arr) = msg.content.as_ref().and_then(|c| c.as_array()) {
-                        for blk in arr {
-                            if blk.get("type").and_then(|v| v.as_str()) != Some("toolCall") { continue; }
-                            let name = blk.get("name").and_then(|v| v.as_str()).map(|s| s.to_lowercase());
-                            if name.as_deref() != Some("write") && name.as_deref() != Some("edit") { continue; }
-                            if let Some(args) = blk.get("arguments") {
-                                if let Some(p) = args.get("file_path").or(args.get("path")).and_then(|v| v.as_str()) {
-                                    if includes.is_empty() || includes.iter().any(|pat| pat.matches(p)) {
-                                        has_ops = true;
-                                        break;
+        }
+        
+        match format {
+            LogFormat::OpenClaw | LogFormat::Unknown => {
+                let typ = e.get("type").and_then(|v| v.as_str());
+                if typ == Some("message") {
+                    if let Some(msg) = e.get("message") {
+                        if let Some(arr) = msg.get("content").and_then(|c| c.as_array()) {
+                            for blk in arr {
+                                if blk.get("type").and_then(|v| v.as_str()) != Some("toolCall") { continue; }
+                                let name = blk.get("name").and_then(|v| v.as_str()).map(|s| s.to_lowercase());
+                                if name.as_deref() != Some("write") && name.as_deref() != Some("edit") { continue; }
+                                if let Some(args) = blk.get("arguments") {
+                                    if let Some(p) = args.get("file_path").or(args.get("path")).and_then(|v| v.as_str()) {
+                                        if includes.is_empty() || includes.iter().any(|pat| pat.matches(p)) {
+                                            has_ops = true;
+                                        }
                                     }
                                 }
                             }
@@ -661,17 +665,103 @@ fn scan_sessions(dir: &Path, includes: &[Pattern], since: DateTime<Utc>, until: 
                     }
                 }
             }
-            if has_ops && in_range { break; }
+            LogFormat::ClaudeCode => {
+                let typ = e.get("type").and_then(|v| v.as_str());
+                if typ == Some("assistant") {
+                    if let Some(msg) = e.get("message") {
+                        if let Some(arr) = msg.get("content").and_then(|c| c.as_array()) {
+                            for blk in arr {
+                                if blk.get("type").and_then(|v| v.as_str()) != Some("tool_use") { continue; }
+                                let name = blk.get("name").and_then(|v| v.as_str()).map(|s| s.to_lowercase());
+                                if name.as_deref() != Some("write") && name.as_deref() != Some("edit") && name.as_deref() != Some("multiedit") { continue; }
+                                if let Some(input) = blk.get("input") {
+                                    if let Some(p) = input.get("file_path").or(input.get("path")).and_then(|v| v.as_str()) {
+                                        if includes.is_empty() || includes.iter().any(|pat| pat.matches(p)) {
+                                            has_ops = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         
-        if has_ops && in_range {
-            if verbose { eprintln!("  Found: {}", path.file_name().unwrap_or_default().to_string_lossy()); }
+        if has_ops && in_range { break; }
+    }
+    
+    has_ops && in_range
+}
+
+/// Scan OpenClaw sessions directory (flat structure)
+fn scan_openclaw_sessions(dir: &Path, includes: &[Pattern], since: DateTime<Utc>, until: DateTime<Utc>, verbose: bool) -> Result<Vec<PathBuf>> {
+    let mut sessions = Vec::new();
+    
+    if !dir.exists() {
+        return Ok(sessions);
+    }
+    
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") { continue; }
+        
+        if session_has_matching_ops(&path, includes, since, until) {
+            if verbose { eprintln!("  [openclaw] Found: {}", path.file_name().unwrap_or_default().to_string_lossy()); }
             sessions.push(path);
         }
     }
     
     sessions.sort();
     Ok(sessions)
+}
+
+/// Scan Claude Code projects directory (has project subdirectories)
+fn scan_claude_code_sessions(dir: &Path, includes: &[Pattern], since: DateTime<Utc>, until: DateTime<Utc>, verbose: bool) -> Result<Vec<PathBuf>> {
+    let mut sessions = Vec::new();
+    
+    if !dir.exists() {
+        return Ok(sessions);
+    }
+    
+    // Claude Code structure: ~/.claude/projects/{project-slug}/{session-id}.jsonl
+    for project_entry in fs::read_dir(dir)? {
+        let project_entry = project_entry?;
+        let project_path = project_entry.path();
+        if !project_path.is_dir() { continue; }
+        
+        for session_entry in fs::read_dir(&project_path).into_iter().flatten().flatten() {
+            let path = session_entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") { continue; }
+            
+            if session_has_matching_ops(&path, includes, since, until) {
+                if verbose { 
+                    let project_name = project_path.file_name().unwrap_or_default().to_string_lossy();
+                    eprintln!("  [claude-code/{}] Found: {}", project_name, path.file_name().unwrap_or_default().to_string_lossy()); 
+                }
+                sessions.push(path);
+            }
+        }
+    }
+    
+    sessions.sort();
+    Ok(sessions)
+}
+
+/// Scan all session sources
+fn scan_sessions(openclaw_dir: &Path, claude_code_dir: &Path, includes: &[Pattern], since: DateTime<Utc>, until: DateTime<Utc>, verbose: bool) -> Result<Vec<PathBuf>> {
+    let mut all_sessions = Vec::new();
+    
+    let openclaw = scan_openclaw_sessions(openclaw_dir, includes, since, until, verbose)?;
+    let claude = scan_claude_code_sessions(claude_code_dir, includes, since, until, verbose)?;
+    
+    all_sessions.extend(openclaw);
+    all_sessions.extend(claude);
+    
+    // Sort by path for consistent ordering
+    all_sessions.sort();
+    Ok(all_sessions)
 }
 
 fn format_date_range(first: DateTime<Utc>, last: DateTime<Utc>) -> String {
