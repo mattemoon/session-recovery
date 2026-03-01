@@ -153,7 +153,21 @@ Claude Code has additional tools we should consider:
 - **Bash/Shell**: Could track file operations from shell commands (future enhancement)
 - **TodoWrite/TodoRead**: Not file operations, ignore
 
-## Open Questions
+## Edge Cases
+
+1. **Truncated/streaming tool calls** — Claude Code has `content_block_start`/`content_block_delta` streaming entries. Skip these; only process complete `tool_use` blocks.
+
+2. **Empty/malformed JSONL lines** — Skip gracefully, log warning count at end.
+
+3. **Session ID extraction timing** — Claude Code has `sessionId` per-message (no upfront session entry like OpenClaw). Extract from first parseable message.
+
+4. **Symlinked session directories** — Follow symlinks (standard fs behavior).
+
+5. **Path normalization** — Canonicalize paths after `cwd` resolution before `--ignore-external` comparison.
+
+6. **MultiEdit atomicity** — Extract as sequence of Edit ops with same timestamp.
+
+## Open Questions (Resolved)
 
 1. **Should we merge sessions from both sources into a single recovery branch?**
    - Yes, chronologically interleaved, each commit attributed to its source session
@@ -165,8 +179,8 @@ Claude Code has additional tools we should consider:
    - Yes, when path is relative, resolve against `cwd` from the message
 
 4. **Project slug → path mapping?**
-   - The slug `-Users-matte-jeb` maps to `/Users/matte/jeb`
-   - Use this for `--ignore-external` when project root can be inferred
+   - Not needed initially; `cwd` in messages provides real paths
+   - Revisit if `--ignore-external` has issues
 
 ## CLI Changes
 
