@@ -204,8 +204,9 @@ Supports both OpenClaw (.openclaw/agents/*/sessions/) and Claude Code
 ## Testing Strategy
 
 1. **Unit tests**: Parse sample logs from both formats
-2. **Integration tests**: Recovery from mixed sessions
-3. **Real-world test**: Recover this crate's own history from both log sources (we have Claude Code sessions in `~/.claude/projects/-Users-matte-jeb/`)
+2. **Corrupt/incomplete log test**: Malformed JSON, truncated files, empty lines
+3. **Integration tests**: Recovery from mixed sessions
+4. **Real-world test**: Recover this crate's own history from both log sources (we have Claude Code sessions in `~/.claude/projects/-Users-matte-jeb/`)
 
 ## Implementation Order
 
