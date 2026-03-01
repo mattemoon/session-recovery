@@ -226,7 +226,7 @@ fn extract(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_exter
     let mut sid = path.file_stem().and_then(|s| s.to_str()).unwrap_or("x").to_string();
     let mut first_ts: Option<DateTime<Utc>> = None;
     let mut last_ts: Option<DateTime<Utc>> = None;
-    let mut last_was_user = false;
+    let mut _last_was_user = false;
 
     for line in rdr.lines().flatten() {
         if line.trim().is_empty() { continue; }
