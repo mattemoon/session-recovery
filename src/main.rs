@@ -657,4 +657,295 @@ fn main() -> Result<()> {
     let repo_path = fs::canonicalize(&args.repo)?;
     
     // Build include patterns for --at
-    let mut effective_includes = includes.
+    let mut effective_includes = includes.clone();
+    if let Some(ref p) = at_path {
+        effective_includes.push(Pattern::new(&format!("*{}*", p)).unwrap_or_else(|_| Pattern::new(p).unwrap()));
+    }
+    
+    // Scan or collect sessions
+    let sessions: Vec<PathBuf> = if args.scan_sessions || args.sessions.is_empty() || at_path.is_some() {
+        let dir = expand_home(&args.sessions_dir);
+        if !dir.exists() { 
+            bail!("Sessions directory not found: {}\n\nTip: Use --sessions-dir to specify location", dir.display()); 
+        }
+        if args.verbose { eprintln!("Scanning sessions in {}...", dir.display()); }
+        scan_sessions(&dir, &effective_includes, since, until, args.verbose)?
+    } else {
+        args.sessions.iter().filter_map(|p| if p.exists() { Some(p.clone()) } else { None }).collect()
+    };
+    
+    if sessions.is_empty() { 
+        eprintln!("session-recovery v{}", env!("CARGO_PKG_VERSION"));
+        eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        eprintln!();
+        eprintln!("No sessions found matching filters.");
+        eprintln!();
+        eprintln!("Suggestions:");
+        eprintln!("  • Check --include patterns match your target files");
+        eprintln!("  • Try --scan-sessions to auto-discover sessions");
+        eprintln!("  • Adjust --since/--until time range (current: {} to {})", since.format("%Y-%m-%d"), until.format("%Y-%m-%d"));
+        eprintln!("  • Use --verbose to see what's being filtered out");
+        bail!("No sessions found");
+    }
+    
+    // Extract operations from sessions
+    let mut session_infos: Vec<SessionInfo> = Vec::new();
+    let mut file_infos: BTreeMap<String, FileInfo> = BTreeMap::new();
+    let mut all_ops = Vec::new();
+    
+    for sp in &sessions {
+        let (sid, ft, lt, ops) = extract(sp, &effective_includes, &excludes, args.ignore_external, &repo_path, cutoff, args.verbose)?;
+        
+        // Track file stats
+        for op in &ops {
+            let fi = file_infos.entry(op.path.clone()).or_default();
+            fi.sessions.insert(sid.clone());
+            fi.versions += 1;
+        }
+        
+        session_infos.push(SessionInfo {
+            id: sid.clone(),
+            first_ts: ft,
+            last_ts: lt,
+            op_count: ops.len(),
+            first_commit: None,
+            last_commit: None,
+        });
+        
+        all_ops.push(Op { ts: ft, tz: 0, model: "system".into(), session: sid.clone(), kind: OpKind::Start, path: String::new() });
+        for op in ops {
+            all_ops.push(op);
+        }
+        all_ops.push(Op { ts: lt, tz: 0, model: "system".into(), session: sid.clone(), kind: OpKind::End, path: String::new() });
+    }
+    
+    all_ops.sort_by_key(|o| o.ts);
+    
+    let file_ops = all_ops.iter().filter(|o| matches!(o.kind, OpKind::Write(_) | OpKind::Edit {..})).count();
+    if file_ops == 0 { 
+        bail!("No file operations found in sessions. Check your --include filters.");
+    }
+    
+    // Determine branch name
+    let branch = args.branch.clone().unwrap_or_else(|| {
+        format!("recovered-{}", &session_infos[0].id[..8])
+    });
+    
+    // Print header
+    print_header(&args, &branch, since, until);
+    print_filters(&args, &effective_includes, &excludes, since, until);
+    print_sessions(&session_infos);
+    print_files(&file_infos, args.verbose);
+    
+    // List-only mode: just show operations
+    if args.list_only {
+        eprintln!("Operations ({} total)", all_ops.len());
+        let mut current_session = String::new();
+        for o in &all_ops {
+            if o.session != current_session {
+                current_session = o.session.clone();
+                let si = session_infos.iter().find(|s| s.id == current_session).unwrap();
+                eprintln!();
+                eprintln!("Session {} ({})", &current_session[..8], format_date_range(si.first_ts, si.last_ts));
+            }
+            let k = match &o.kind { 
+                OpKind::Write(_) => "write", 
+                OpKind::Edit {..} => "edit", 
+                OpKind::Start => continue,
+                OpKind::End => continue,
+            };
+            eprintln!("  [{}] {}  {}", o.ts.format("%Y-%m-%dT%H:%M:%SZ"), k, o.path);
+        }
+        return Ok(());
+    }
+    
+    // Open repository and verify clean state
+    let repo = Repository::open(&repo_path)?;
+    verify_clean(&repo)?;
+    
+    let orig_head = repo.head().ok().and_then(|h| h.target());
+    
+    // Process operations and create commits
+    let mut files: HashMap<String, String> = HashMap::new();
+    let mut tree_id: Option<Oid> = None;
+    let mut parent: Option<Oid> = None;
+    let mut total_commits = 0;
+    let mut warnings: Vec<Warning> = Vec::new();
+    let mut seen_sessions: HashSet<String> = HashSet::new();
+    let mut session_commits: HashMap<String, (Option<Oid>, Option<Oid>)> = HashMap::new();
+    let branch_ref = format!("refs/heads/{}", branch);
+    
+    for op in &all_ops {
+        match &op.kind {
+            OpKind::Start => {
+                let sig = Signature::new("OpenClaw", "noreply@anthropic.com", &Time::new(op.ts.timestamp(), op.tz))?;
+                let empty = repo.treebuilder(None)?.write()?;
+                let etree = repo.find_tree(empty)?;
+                let msg = format!("Beginning recovery from OpenClaw session {}", op.session);
+                let oid = repo.commit(None, &sig, &sig, &msg, &etree, &[])?;
+                total_commits += 1;
+                
+                session_commits.entry(op.session.clone()).or_insert((None, None)).0 = Some(oid);
+                
+                if seen_sessions.is_empty() {
+                    parent = Some(oid);
+                    tree_id = Some(empty);
+                    if args.confirm {
+                        repo.reference(&branch_ref, oid, true, "init recovery branch")?;
+                    }
+                } else if let Some(p) = parent {
+                    let pc = repo.find_commit(p)?;
+                    let oc = repo.find_commit(oid)?;
+                    let t = repo.find_tree(tree_id.unwrap())?;
+                    let msg = format!("Including OpenClaw session {} in recovery", op.session);
+                    let mid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc, &oc])?;
+                    parent = Some(mid);
+                    total_commits += 1;
+                    if args.confirm {
+                        repo.reference(&branch_ref, mid, true, "merge session")?;
+                    }
+                }
+                seen_sessions.insert(op.session.clone());
+            }
+            OpKind::End => {
+                if let Some(tid) = tree_id {
+                    let sig = Signature::new("OpenClaw", "noreply@anthropic.com", &Time::new(op.ts.timestamp(), op.tz))?;
+                    let t = repo.find_tree(tid)?;
+                    let msg = format!("Completing recovery from OpenClaw session {}", op.session);
+                    let pc = repo.find_commit(parent.unwrap())?;
+                    let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
+                    parent = Some(oid);
+                    total_commits += 1;
+                    
+                    session_commits.entry(op.session.clone()).or_insert((None, None)).1 = Some(oid);
+                    
+                    if args.confirm {
+                        repo.reference(&branch_ref, oid, true, "end session")?;
+                    }
+                }
+            }
+            OpKind::Write(content) => {
+                let rp = match resolve(&op.path, &repo_path, args.ignore_external, args.strip_prefix.as_deref(), args.add_prefix.as_deref()) { 
+                    Some(p) => p, 
+                    None => continue 
+                };
+                let ps = rp.to_string_lossy().to_string();
+                files.insert(ps.clone(), content.clone());
+                
+                let blob = repo.blob(content.as_bytes())?;
+                let base = tree_id.and_then(|t| repo.find_tree(t).ok());
+                let new_tree = insert_file(&repo, base.as_ref(), &rp, blob)?;
+                tree_id = Some(new_tree);
+                
+                let (aname, aemail) = model_author(&op.model);
+                let sig = Signature::new(&aname, aemail, &Time::new(op.ts.timestamp(), op.tz))?;
+                let t = repo.find_tree(new_tree)?;
+                let msg = format!("write: {}", ps);
+                let pc = repo.find_commit(parent.unwrap())?;
+                let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
+                parent = Some(oid);
+                total_commits += 1;
+                
+                if args.confirm {
+                    repo.reference(&branch_ref, oid, true, "write")?;
+                }
+            }
+            OpKind::Edit { old, new } => {
+                let rp = match resolve(&op.path, &repo_path, args.ignore_external, args.strip_prefix.as_deref(), args.add_prefix.as_deref()) { 
+                    Some(p) => p, 
+                    None => continue 
+                };
+                let ps = rp.to_string_lossy().to_string();
+                let cur = files.get(&ps).cloned().unwrap_or_default();
+                let (updated, ok) = apply_edit(&cur, old, new);
+                files.insert(ps.clone(), updated.clone());
+                
+                let blob = repo.blob(updated.as_bytes())?;
+                let base = tree_id.and_then(|t| repo.find_tree(t).ok());
+                let new_tree = insert_file(&repo, base.as_ref(), &rp, blob)?;
+                tree_id = Some(new_tree);
+                
+                let (aname, aemail) = model_author(&op.model);
+                let sig = Signature::new(&aname, aemail, &Time::new(op.ts.timestamp(), op.tz))?;
+                let t = repo.find_tree(new_tree)?;
+                let msg = if ok { 
+                    format!("edit: {}", ps) 
+                } else { 
+                    format!("⚠️ edit (appended): {}", ps) 
+                };
+                let pc = repo.find_commit(parent.unwrap())?;
+                let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
+                parent = Some(oid);
+                total_commits += 1;
+                
+                if !ok {
+                    warnings.push(Warning {
+                        path: ps.clone(),
+                        ts: op.ts,
+                        message: "Edit target not found, content appended".into(),
+                        commit: Some(oid),
+                    });
+                }
+                
+                if args.confirm {
+                    repo.reference(&branch_ref, oid, true, "edit")?;
+                }
+            }
+        }
+    }
+    
+    // Update session_infos with commit IDs
+    for si in &mut session_infos {
+        if let Some((first, last)) = session_commits.get(&si.id) {
+            si.first_commit = *first;
+            si.last_commit = *last;
+        }
+    }
+    
+    // Get first and last commits overall
+    let first_commit = session_infos.first().and_then(|s| s.first_commit);
+    let last_commit = parent;
+    
+    // Print results
+    print_processing_result(&session_infos, total_commits, &warnings);
+    print_warnings(&warnings);
+    
+    if !args.confirm {
+        print_preview_result(file_ops, total_commits, first_commit, last_commit);
+        return Ok(());
+    }
+    
+    // Set up merge state (--confirm mode only)
+    if let Some(head_id) = orig_head {
+        let branch_commit = repo.find_commit(parent.unwrap())?;
+        let ann = repo.find_annotated_commit(branch_commit.id())?;
+        
+        repo.merge(&[&ann], None, None)?;
+        
+        // Checkout our original tree (ours strategy)
+        let our_commit = repo.find_commit(head_id)?;
+        let our_tree = our_commit.tree()?;
+        repo.checkout_tree(our_tree.as_object(), Some(git2::build::CheckoutBuilder::new().force()))?;
+        
+        let session_ids: Vec<_> = session_infos.iter().map(|s| &s.id[..8]).collect();
+        let slist = if session_ids.len() == 1 { 
+            format!("session {}", session_ids[0]) 
+        } else { 
+            format!("sessions {}", session_ids.join(", ")) 
+        };
+        let suffix = if !warnings.is_empty() { " (partial recovery with errors)" } else { "" };
+        let mmsg = format!("Merge recovered OpenClaw {}{}", slist, suffix);
+        
+        let git_dir = repo.path();
+        fs::write(git_dir.join("MERGE_MSG"), &mmsg)?;
+        
+        print_merge_state(&branch, parent.unwrap(), &mmsg, !warnings.is_empty());
+    } else {
+        eprintln!("Branch created: {} @ {}", branch, short_oid(parent.unwrap()));
+        eprintln!();
+        eprintln!("No existing HEAD to merge with.");
+        eprintln!("To use this branch: git checkout {}", branch);
+    }
+    
+    Ok(())
+}
