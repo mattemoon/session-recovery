@@ -18,6 +18,24 @@ use std::path::{Component, Path, PathBuf};
 /// Default time range: ~3 years (in seconds)
 const DEFAULT_SINCE_SECONDS: i64 = 3 * 365 * 24 * 60 * 60;
 
+/// Session log format
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogFormat {
+    OpenClaw,
+    ClaudeCode,
+    Unknown,
+}
+
+impl std::fmt::Display for LogFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LogFormat::OpenClaw => write!(f, "openclaw"),
+            LogFormat::ClaudeCode => write!(f, "claude-code"),
+            LogFormat::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
 /// Truncate commit ID to 12 characters
 fn short_oid(oid: Oid) -> String {
     oid.to_string()[..12].to_string()
