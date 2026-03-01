@@ -374,14 +374,16 @@ session-recovery --scan-sessions --include "crates/session-recovery/**" --ignore
 git commit  # Accept the merge
 ```
 
-## Future Scope
+## Implemented Features
 
-### Confirmation Mode (Implemented)
+### Confirmation Mode
 The default behavior is preview-only:
 - By default, shows what would be recovered without making any changes
 - Displays session info, operation counts, file paths
 - Requires `--confirm` or `--yes` flag to actually apply changes
 - This makes the tool safe for exploration — run freely to see what's available
+
+## Future Scope
 
 ### Claude Code and Other Agents
 This tool is designed for OpenClaw session logs, but the architecture should eventually support:
