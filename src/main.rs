@@ -73,9 +73,13 @@ struct Args {
     #[arg(long)]
     scan_sessions: bool,
 
-    /// Directory to scan for sessions
+    /// OpenClaw sessions directory
     #[arg(long, default_value = "~/.openclaw/agents/main/sessions/")]
     sessions_dir: String,
+
+    /// Claude Code projects directory (scans all subdirectories)
+    #[arg(long, default_value = "~/.claude/projects/")]
+    claude_sessions_dir: String,
 
     /// Only include sessions with activity after this time
     #[arg(long)]
