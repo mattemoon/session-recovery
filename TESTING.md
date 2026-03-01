@@ -91,9 +91,11 @@
 #### Empty Recovery
 - ✅ Session with no file operations returns error "no file operations"
 
-## Not Yet Tested
+#### Add Prefix
+- ✅ `--add-prefix "legacy/"` correctly adds prefix to paths
+- ✅ `src/main.rs` becomes `legacy/src/main.rs`
 
-- [ ] `--add-prefix` (tested `--strip-prefix` only)
+## Not Yet Tested
 - [ ] `--no-collapse` flag
 - [ ] Commit collapsing behavior
 - [ ] Directory-to-file replacement
