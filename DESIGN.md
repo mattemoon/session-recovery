@@ -74,6 +74,28 @@ If any of these conditions are not met, the tool exits with an error. There is n
 - Shorthand for excluding all files outside the repository
 - Equivalent to only including files that resolve inside the repo
 
+### Path Remapping
+
+**`--strip-prefix <path>`**:
+- Remove this prefix from all file paths before writing
+- Example: `--strip-prefix /Users/other/worktree/` turns `/Users/other/worktree/src/main.rs` into `src/main.rs`
+
+**`--add-prefix <path>`**:
+- Add this prefix to all file paths after stripping
+- Example: `--add-prefix legacy/` turns `src/main.rs` into `legacy/src/main.rs`
+
+**Use case:** Work done in different worktrees or by different agents in different locations can be remapped to the correct paths in the target repository.
+
+```bash
+# Remap from agent's worktree to repo root
+session-recovery --strip-prefix "/tmp/agent-workspace/myproject/" --confirm
+
+# Remap to a subdirectory
+session-recovery --strip-prefix "/old/path/" --add-prefix "imported/" --confirm
+```
+
+**Note:** Path remapping is applied after include/exclude filtering but before writing. The original paths are used for filtering; remapped paths are used for commits.
+
 ### Path Handling
 
 Split all file operations into two categories:
