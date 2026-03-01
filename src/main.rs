@@ -949,3 +949,9 @@ fn main() -> Result<()> {
     
     Ok(())
 }
+
+
+
+                    if verbose { eprintln!("  [{}] write: {}", ts.format("%H:%M:%S"), p); }
+                    ops.push(Op { ts, tz, model: model.clone(), session: sid.clone(), kind: OpKind::Write(c.into()), path: p.into() });
+                    _last_was_user = false;
