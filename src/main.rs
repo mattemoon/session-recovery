@@ -18,6 +18,9 @@ use std::path::{Component, Path, PathBuf};
 /// Default time range: ~3 years (in seconds)
 const DEFAULT_SINCE_SECONDS: i64 = 3 * 365 * 24 * 60 * 60;
 
+/// Max gap between operations for consolidation (64 * 32 = 2048 seconds ≈ 34 minutes)
+const CONSOLIDATION_MAX_GAP_SECONDS: i64 = 64 * 32;
+
 /// Session log format
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LogFormat {
@@ -105,7 +108,9 @@ struct Args {
     #[arg(long, default_value = "14d")]
     lookback: String,
 
-    /// Disable commit collapsing
+    /// Disable commit collapsing (consolidation of rapid consecutive edits)
+    /// When enabled (default), consecutive operations within 2048 seconds
+    /// are consolidated into single commits unless they conflict.
     #[arg(long)]
     no_collapse: bool,
 
