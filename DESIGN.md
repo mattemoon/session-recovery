@@ -316,25 +316,34 @@ Merge recovered OpenClaw sessions <id1>, <id2>, and <id3>
 Merge recovered OpenClaw session <id> (partial recovery with errors)
 ```
 
+## Preview vs Apply Mode
+
+**Important distinction:** The `--confirm` flag does NOT control whether commits are created — it controls whether refs are updated.
+
+In **both** modes:
+- Git objects (blobs, trees, commits) are written to the repository's object database
+- The same commit hashes are produced for the same inputs (deterministic)
+
+The difference:
+- **Preview mode** (default): Objects exist but no branch refs point to them. Safe to run repeatedly to explore what would be recovered.
+- **Apply mode** (`--confirm`): Branch is created/updated, repository enters uncommitted merge state.
+
+This is analogous to `git merge -s ours` — the commits are created either way, but in preview mode you just don't see them in `git log` because no refs point to them.
+
+**Why this matters:** You can run preview mode, note the commit IDs from the output, and manually inspect them with `git show <commit-id>` before deciding whether to apply. The commits won't disappear until garbage collection (typically weeks later).
+
+## Output Format
+
+See `OUTPUT_FORMAT.md` for detailed specification of the CLI output.
+
+Key principles:
+- Clear indication of mode (preview vs apply)
+- 12-character truncated commit IDs shown for all created commits
+- File-by-file summary with version counts per session
+- Explicit next-step instructions (especially for merge state)
+- Warnings surfaced prominently with commit IDs for inspection
+
 ## CLI Flags Summary
-
-The tool always outputs a summary of all parameters:
-
-```
-session-recovery v0.1.0
-━━━━━━━━━━━━━━━━━━━━━━━
-Repository:      /path/to/repo (default: .)
-Branch:          recovered-abc123 (default: derived from first session)
-Sessions:        3 files (or: scanning ~/.openclaw/agents/main/sessions/)
-Include:         ["crates/gravity/**"] (default: all)
-Exclude:         [] (default: none)
-Ignore external: yes (default: no)
-Time range:      2023-01-01 to 2026-02-28 (default: last ~3.3 years)
-Collapse:        yes (default: yes)
-Dry run:         no
-
-Found 1023 operations in 5 sessions...
-```
 
 ### Full Flag List
 
