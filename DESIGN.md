@@ -1,3 +1,5 @@
+<!-- Last reviewed: 2026-03-01 -->
+
 # Session Recovery - Design Document
 
 Inspired by [claude-file-recovery](https://github.com/hjtenklooster/claude-file-recovery).
