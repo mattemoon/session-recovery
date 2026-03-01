@@ -1,7 +1,8 @@
-//! session-recovery — Recover file history from OpenClaw session logs
+//! session-recovery — Recover file history from OpenClaw and Claude Code session logs
 //!
 //! See DESIGN.md for full specification.
 //! See OUTPUT_FORMAT.md for CLI output design.
+//! See CLAUDE_CODE_SUPPORT.md for multi-format support.
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
