@@ -140,8 +140,8 @@ Claude Code organizes sessions by project. Add project-aware filtering:
 | Model | `message.model` or `modelId` | `message.model` |
 | Write path | `arguments.file_path` or `.path` | `input.file_path` |
 | Write content | `arguments.content` | `input.content` |
-| Edit old | `arguments.oldText` or `.old_string` | `input.old_str` |
-| Edit new | `arguments.newText` or `.new_string` | `input.new_str` |
+| Edit old | `arguments.oldText` or `.old_string` | `input.old_string` |
+| Edit new | `arguments.newText` or `.new_string` | `input.new_string` |
 | Tool type marker | `type:"toolCall"` | `type:"tool_use"` |
 | Working dir | (inferred from paths) | `cwd` field |
 
