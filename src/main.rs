@@ -81,6 +81,14 @@ struct Args {
     #[arg(long, default_value = "~/.claude/projects/")]
     claude_sessions_dir: String,
 
+    /// Only scan OpenClaw sessions (skip Claude Code)
+    #[arg(long)]
+    openclaw_only: bool,
+
+    /// Only scan Claude Code sessions (skip OpenClaw)
+    #[arg(long)]
+    claude_only: bool,
+
     /// Only include sessions with activity after this time
     #[arg(long)]
     since: Option<String>,
