@@ -1194,13 +1194,7 @@ fn main() -> Result<()> {
                 let (aname, aemail) = model_author(&op.model);
                 let sig = Signature::new(&aname, aemail, &Time::new(op.ts.timestamp(), op.tz))?;
                 let t = repo.find_tree(new_tree)?;
-                // Get format name for session ID line
-                let format_name = if op.model.contains("opus") || op.model.contains("sonnet") || op.model.contains("haiku") || op.model.contains("claude") {
-                    // Model name indicates OpenClaw
-                    "OpenClaw"
-                } else {
-                    "Session"
-                };
+                let format_name = session_formats.get(&op.session).map(|s| s.as_str()).unwrap_or("Session");
                 let msg = format!("write: {}\n\n{} session {}", ps, format_name, op.session);
                 let pc = repo.find_commit(parent.unwrap())?;
                 let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
@@ -1229,10 +1223,11 @@ fn main() -> Result<()> {
                 let (aname, aemail) = model_author(&op.model);
                 let sig = Signature::new(&aname, aemail, &Time::new(op.ts.timestamp(), op.tz))?;
                 let t = repo.find_tree(new_tree)?;
+                let format_name = session_formats.get(&op.session).map(|s| s.as_str()).unwrap_or("Session");
                 let msg = if ok { 
-                    format!("edit: {}", ps) 
+                    format!("edit: {}\n\n{} session {}", ps, format_name, op.session) 
                 } else { 
-                    format!("⚠️ edit (mismatched): {}", ps) 
+                    format!("⚠️ edit (mismatched): {}\n\n{} session {}", ps, format_name, op.session) 
                 };
                 let pc = repo.find_commit(parent.unwrap())?;
                 let oid = repo.commit(None, &sig, &sig, &msg, &t, &[&pc])?;
