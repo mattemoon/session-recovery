@@ -1514,63 +1514,6 @@ fn main() -> Result<()> {
     
     Ok(())
 }
-    }
-    
-    // Set up merge state (--confirm mode only)
-    if let Some(head_id) = orig_head {
-        let branch_commit = repo.find_commit(parent.unwrap())?;
-        let ann = repo.find_annotated_commit(branch_commit.id())?;
-        
-        // Validate merge strategy
-        let use_theirs = match args.merge.as_str() {
-            "ours" => false,
-            "theirs" => true,
-            other => bail!("Invalid merge strategy '{}'. Use 'ours' or 'theirs'.", other),
-        };
-        
-        repo.merge(&[&ann], None, None)?;
-        
-        // Checkout the appropriate tree based on strategy
-        let tree_to_use = if use_theirs {
-            // "theirs" = use the recovery branch's tree (the recovered files)
-            branch_commit.tree()?
-        } else {
-            // "ours" = keep our original tree (just add history)
-            let our_commit = repo.find_commit(head_id)?;
-            our_commit.tree()?
-        };
-        repo.checkout_tree(tree_to_use.as_object(), Some(git2::build::CheckoutBuilder::new().force()))?;
-        
-        // Build session list with format labels
-        let session_labels: Vec<_> = session_infos.iter().map(|s| {
-            let fmt = match s.format {
-                LogFormat::ClaudeCode => "Claude Code",
-                LogFormat::OpenClaw => "OpenClaw", 
-                LogFormat::Unknown => "unknown",
-            };
-            format!("{} ({})", &s.id[..8], fmt)
-        }).collect();
-        let slist = if session_labels.len() == 1 { 
-            format!("session {}", session_labels[0]) 
-        } else { 
-            format!("sessions {}", session_labels.join(", ")) 
-        };
-        let suffix = if !warnings.is_empty() { " (partial recovery with errors)" } else { "" };
-        let mmsg = format!("Merge recovered {}{}", slist, suffix);
-        
-        let git_dir = repo.path();
-        fs::write(git_dir.join("MERGE_MSG"), &mmsg)?;
-        
-        print_merge_state(&branch, parent.unwrap(), &mmsg, !warnings.is_empty(), &args.merge);
-    } else {
-        eprintln!("Branch created: {} @ {}", branch, short_oid(parent.unwrap()));
-        eprintln!();
-        eprintln!("No existing HEAD to merge with.");
-        eprintln!("To use this branch: git checkout {}", branch);
-    }
-    
-    Ok(())
-}
 
 
 
