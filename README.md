@@ -4,6 +4,28 @@ Recover file history from OpenClaw session logs as git commits.
 
 Inspired by [claude-file-recovery](https://github.com/hjtenklooster/claude-file-recovery).
 
+---
+
+**🪞 Meta:** This repository was itself created using `session-recovery`. The entire development history — every write, every edit — was recovered from the OpenClaw session logs where the tool was built, then used to bootstrap this repo:
+
+```bash
+git init -b master
+git commit --allow-empty -m "Initial commit"
+
+session-recovery \
+  --scan-sessions \
+  --include "*/session-recovery/*" \
+  --strip-prefix "/Users/matte/jeb/crates/session-recovery/" \
+  --merge theirs \
+  --confirm
+
+git commit -m "Merge recovered OpenClaw sessions"
+```
+
+What you're reading is a tool that extracted its own birth from AI memory.
+
+---
+
 ## Why Use This?
 
 When you work with AI coding assistants through OpenClaw, every file edit is logged — but those changes happen outside of git. If you want to see how a file evolved during a session, or recover a version from before you overwrote it, that history exists only in the session logs.
