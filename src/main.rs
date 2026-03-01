@@ -252,7 +252,7 @@ fn extract(path: &Path, includes: &[Pattern], excludes: &[Pattern], ignore_exter
         if let Some(m) = &msg.model { model = m.clone(); }
         
         if msg.role.as_deref() == Some("user") {
-            last_was_user = true;
+            _last_was_user = true;
             continue;
         }
         
