@@ -43,7 +43,7 @@ fn short_oid(oid: Oid) -> String {
 
 #[derive(Parser)]
 #[command(name = "session-recovery")]
-#[command(about = "Recover file history from OpenClaw session logs")]
+#[command(about = "Recover file history from OpenClaw and Claude Code session logs")]
 #[command(version)]
 struct Args {
     /// Session .jsonl files to recover (optional if --scan-sessions or --at)
