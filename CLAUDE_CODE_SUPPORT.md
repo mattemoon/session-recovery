@@ -187,9 +187,11 @@ Claude Code has additional tools we should consider:
 ### New flags:
 ```
 --claude-sessions-dir <PATH>   Claude Code projects directory [default: ~/.claude/projects/]
---claude-project <SLUG>        Filter to specific Claude Code project
---log-format <auto|openclaw|claude-code>   Force log format [default: auto]
 ```
+
+**Deferred (add if needed):**
+- `--claude-project <SLUG>` — use `--include` glob instead
+- `--log-format <auto|openclaw|claude-code>` — auto-detection should be reliable
 
 ### Updated help text:
 ```
