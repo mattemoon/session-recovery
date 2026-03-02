@@ -1,0 +1,21 @@
+[package]
+name = "session-recovery"
+version = "0.1.0"
+edition = "2024"
+description = "Recover file history from OpenClaw session logs"
+authors = ["Matte <matte@openclaw.local>"]
+
+[[bin]]
+name = "session-recovery"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+git2 = "0.18"
+glob = "0.3"
+dirs = "5"
+tempfile = "3"
