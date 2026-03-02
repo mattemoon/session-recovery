@@ -190,6 +190,8 @@ struct Op {
 enum OpKind {
     Write(String),
     Edit { old: String, new: String },
+    /// Read result - establishes known file state for subsequent edits
+    Read(String),
     Start,
     End,
     /// User message or unsupported tool call - breaks consolidation batches
