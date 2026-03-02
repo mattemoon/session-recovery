@@ -1194,6 +1194,7 @@ fn main() -> Result<()> {
             let k = match &o.kind { 
                 OpKind::Write(_) => "write", 
                 OpKind::Edit {..} => "edit", 
+                OpKind::Read(_) => "read",
                 OpKind::Start | OpKind::End | OpKind::BatchBreak => continue,
             };
             eprintln!("  [{}] {}  {}", o.ts.format("%Y-%m-%dT%H:%M:%SZ"), k, o.path);
@@ -1295,23 +1296,9 @@ fn main() -> Result<()> {
                     last_session = Some(&op.session);
                 }
                 OpKind::Read(_) => {
-                    // Read establishes file state - include in batch but updates the known state
-                    let can_extend = match (last_ts, last_session) {
-                        (Some(lt), Some(ls)) => {
-                            consolidate::can_consolidate(lt, op.ts.timestamp(), ls, &op.session, CONSOLIDATION_MAX_GAP_SECONDS)
-                        }
-                        _ => false,
-                    };
-                    
-                    if can_extend {
-                        current_batch.push(i);
-                    } else {
-                        if !current_batch.is_empty() {
-                            result.push(current_batch);
-                        }
-                        current_batch = vec![i];
-                        current_batch_edits.clear(); // Read resets edit tracking since we have fresh state
-                    }
+                    // Read doesn't create commits, it just informs our file state model
+                    // Don't include in batches, but don't break batches either
+                    // Keep tracking timestamp for consolidation window
                     last_ts = Some(op.ts.timestamp());
                     last_session = Some(&op.session);
                 }
@@ -1371,25 +1358,22 @@ fn main() -> Result<()> {
         match &op.kind {
             OpKind::Start | OpKind::End | OpKind::BatchBreak => {
                 // Session markers and batch breaks are for batching logic only, no commits created
-                // All session info is in the commit message body
                 seen_sessions.insert(op.session.clone());
             }
             OpKind::Read(content) => {
-                // Read establishes file state - use it to set our known state
+                // Read establishes file state - update our internal model
+                // This helps subsequent edits apply correctly
                 let rp = match resolve(&op.path, &repo_path, args.ignore_external, args.strip_prefix.as_deref(), args.add_prefix.as_deref()) { 
                     Some(p) => p, 
                     None => continue 
                 };
                 let ps = rp.to_string_lossy().to_string();
                 
-                // Update our file state model with what was read
-                files.insert(ps.clone(), content.clone());
-                
-                // Track this op for batch (Read doesn't create tree changes, just state tracking)
-                current_batch_ops.push((ps.clone(), "read", op.session.clone()));
-                pending_batch_ts = Some(op.ts);
-                pending_batch_tz = op.tz;
-                pending_batch_model = op.model.clone();
+                // Only update if we don't already have state (Read reveals existing file content)
+                if !files.contains_key(&ps) {
+                    files.insert(ps, content.clone());
+                }
+                // Read doesn't create commits, just informs our model
                 seen_sessions.insert(op.session.clone());
             }
             OpKind::Write(content) => {
