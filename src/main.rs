@@ -1150,8 +1150,7 @@ fn main() -> Result<()> {
             let k = match &o.kind { 
                 OpKind::Write(_) => "write", 
                 OpKind::Edit {..} => "edit", 
-                OpKind::Start => continue,
-                OpKind::End => continue,
+                OpKind::Start | OpKind::End | OpKind::BatchBreak => continue,
             };
             eprintln!("  [{}] {}  {}", o.ts.format("%Y-%m-%dT%H:%M:%SZ"), k, o.path);
         }
