@@ -439,6 +439,9 @@ fn extract_claude_code(path: &Path, includes: &[Pattern], excludes: &[Pattern], 
     let mut cwd: Option<String> = None;
     let mut first_ts: Option<DateTime<Utc>> = None;
     let mut last_ts: Option<DateTime<Utc>> = None;
+    
+    // Track pending Read calls: tool_use_id → (path, timestamp, tz)
+    let mut pending_reads: HashMap<String, (String, DateTime<Utc>, i32)> = HashMap::new();
 
     for line in rdr.lines().flatten() {
         if line.trim().is_empty() { continue; }
@@ -472,8 +475,38 @@ fn extract_claude_code(path: &Path, includes: &[Pattern], excludes: &[Pattern], 
         // Check message type
         let typ = e.get("type").and_then(|v| v.as_str());
         
-        // User messages break consolidation batches
+        // Handle user messages - check for tool results first
         if typ == Some("user") {
+            // Check for tool_result to capture Read results
+            if let Some(msg) = e.get("message") {
+                if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
+                    for blk in content {
+                        if blk.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                            if let Some(tool_id) = blk.get("tool_use_id").and_then(|t| t.as_str()) {
+                                // Check if this is a result for a pending Read
+                                if let Some((read_path, read_ts, read_tz)) = pending_reads.remove(tool_id) {
+                                    // Get the content from the result
+                                    if let Some(result_content) = blk.get("content").and_then(|c| c.as_str()) {
+                                        // Skip error results
+                                        if !result_content.contains("tool_use_error") {
+                                            if verbose { eprintln!("  [{}] read result: {}", read_ts.format("%H:%M:%S"), read_path); }
+                                            ops.push(Op { 
+                                                ts: read_ts, 
+                                                tz: read_tz, 
+                                                model: model.clone(), 
+                                                session: sid.clone(), 
+                                                kind: OpKind::Read(result_content.to_string()), 
+                                                path: read_path 
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // User messages still break consolidation batches
             ops.push(Op { ts, tz, model: model.clone(), session: sid.clone(), kind: OpKind::BatchBreak, path: String::new() });
             continue;
         }
@@ -511,7 +544,16 @@ fn extract_claude_code(path: &Path, includes: &[Pattern], excludes: &[Pattern], 
                         None => continue,
                     };
                     
+                    // Get tool_use id for tracking Read calls
+                    let tool_id = blk.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                    
                     match tool_name {
+                        "read" => {
+                            // Track Read call - we'll get the content from the tool_result
+                            if !should_include_path(&resolved_path, includes, excludes, ignore_external, repo_path) { continue; }
+                            if verbose { eprintln!("  [{}] read: {} (pending)", ts.format("%H:%M:%S"), resolved_path); }
+                            pending_reads.insert(tool_id.to_string(), (resolved_path, ts, tz));
+                        }
                         "write" => {
                             let content = match input.get("content").and_then(|v| v.as_str()) {
                                 Some(c) => c,
@@ -1252,6 +1294,27 @@ fn main() -> Result<()> {
                     last_ts = Some(op.ts.timestamp());
                     last_session = Some(&op.session);
                 }
+                OpKind::Read(_) => {
+                    // Read establishes file state - include in batch but updates the known state
+                    let can_extend = match (last_ts, last_session) {
+                        (Some(lt), Some(ls)) => {
+                            consolidate::can_consolidate(lt, op.ts.timestamp(), ls, &op.session, CONSOLIDATION_MAX_GAP_SECONDS)
+                        }
+                        _ => false,
+                    };
+                    
+                    if can_extend {
+                        current_batch.push(i);
+                    } else {
+                        if !current_batch.is_empty() {
+                            result.push(current_batch);
+                        }
+                        current_batch = vec![i];
+                        current_batch_edits.clear(); // Read resets edit tracking since we have fresh state
+                    }
+                    last_ts = Some(op.ts.timestamp());
+                    last_session = Some(&op.session);
+                }
                 OpKind::Start | OpKind::End | OpKind::BatchBreak => {
                     // Session boundaries, user messages, and unsupported tools break batches
                     if !current_batch.is_empty() {
@@ -1309,6 +1372,24 @@ fn main() -> Result<()> {
             OpKind::Start | OpKind::End | OpKind::BatchBreak => {
                 // Session markers and batch breaks are for batching logic only, no commits created
                 // All session info is in the commit message body
+                seen_sessions.insert(op.session.clone());
+            }
+            OpKind::Read(content) => {
+                // Read establishes file state - use it to set our known state
+                let rp = match resolve(&op.path, &repo_path, args.ignore_external, args.strip_prefix.as_deref(), args.add_prefix.as_deref()) { 
+                    Some(p) => p, 
+                    None => continue 
+                };
+                let ps = rp.to_string_lossy().to_string();
+                
+                // Update our file state model with what was read
+                files.insert(ps.clone(), content.clone());
+                
+                // Track this op for batch (Read doesn't create tree changes, just state tracking)
+                current_batch_ops.push((ps.clone(), "read", op.session.clone()));
+                pending_batch_ts = Some(op.ts);
+                pending_batch_tz = op.tz;
+                pending_batch_model = op.model.clone();
                 seen_sessions.insert(op.session.clone());
             }
             OpKind::Write(content) => {
