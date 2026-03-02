@@ -349,9 +349,44 @@ fn extract_openclaw(path: &Path, includes: &[Pattern], excludes: &[Pattern], ign
     let mut first_ts: Option<DateTime<Utc>> = None;
     let mut last_ts: Option<DateTime<Utc>> = None;
     let mut _last_was_user = false;
+    
+    // Track pending Read calls: toolCallId → (path, timestamp, tz)
+    let mut pending_reads: HashMap<String, (String, DateTime<Utc>, i32)> = HashMap::new();
 
     for line in rdr.lines().flatten() {
         if line.trim().is_empty() { continue; }
+        
+        // First try to parse as generic JSON for toolResult handling
+        let json_val: serde_json::Value = match serde_json::from_str(&line) { Ok(v) => v, Err(_) => continue };
+        
+        // Check for toolResult messages
+        if let Some(msg) = json_val.get("message") {
+            if msg.get("role").and_then(|r| r.as_str()) == Some("toolResult") {
+                if let Some(tool_id) = msg.get("toolCallId").and_then(|t| t.as_str()) {
+                    if let Some((read_path, read_ts, read_tz)) = pending_reads.remove(tool_id) {
+                        // Get the content from the result
+                        if let Some(content_arr) = msg.get("content").and_then(|c| c.as_array()) {
+                            for c in content_arr {
+                                if let Some(text) = c.get("text").and_then(|t| t.as_str()) {
+                                    if verbose { eprintln!("  [{}] read result: {}", read_ts.format("%H:%M:%S"), read_path); }
+                                    ops.push(Op { 
+                                        ts: read_ts, 
+                                        tz: read_tz, 
+                                        model: model.clone(), 
+                                        session: sid.clone(), 
+                                        kind: OpKind::Read(text.to_string()), 
+                                        path: read_path.clone()
+                                    });
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                continue; // Skip further processing for toolResult
+            }
+        }
+        
         let e: Entry = match serde_json::from_str(&line) { Ok(e) => e, Err(_) => continue };
         
         let (ts, tz) = match e.timestamp.as_deref().and_then(parse_ts) {
@@ -394,7 +429,17 @@ fn extract_openclaw(path: &Path, includes: &[Pattern], excludes: &[Pattern], ign
             
             let fpath = args.get("file_path").or(args.get("path")).and_then(|v| v.as_str());
             
+            // Get tool call ID for tracking reads
+            let tool_call_id = blk.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            
             match tool_name {
+                "read" => {
+                    // Track Read call - we'll get the content from the toolResult
+                    let p = match fpath { Some(p) => p, None => continue };
+                    if !should_include_path(p, includes, excludes, ignore_external, repo_path) { continue; }
+                    if verbose { eprintln!("  [{}] read: {} (pending)", ts.format("%H:%M:%S"), p); }
+                    pending_reads.insert(tool_call_id.to_string(), (p.to_string(), ts, tz));
+                }
                 "write" => {
                     let (p, c) = match (fpath, args.get("content").and_then(|v| v.as_str())) {
                         (Some(p), Some(c)) => (p, c), _ => continue
