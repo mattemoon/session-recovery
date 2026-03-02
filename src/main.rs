@@ -192,6 +192,8 @@ enum OpKind {
     Edit { old: String, new: String },
     Start,
     End,
+    /// User message or unsupported tool call - breaks consolidation batches
+    BatchBreak,
 }
 
 /// Tracking information for a recovered session
@@ -370,7 +372,8 @@ fn extract_openclaw(path: &Path, includes: &[Pattern], excludes: &[Pattern], ign
         if let Some(m) = &msg.model { model = m.clone(); }
         
         if msg.role.as_deref() == Some("user") {
-            _last_was_user = true;
+            // User message breaks consolidation batches
+            ops.push(Op { ts, tz, model: model.clone(), session: sid.clone(), kind: OpKind::BatchBreak, path: String::new() });
             continue;
         }
         
@@ -409,7 +412,10 @@ fn extract_openclaw(path: &Path, includes: &[Pattern], excludes: &[Pattern], ign
                     _last_was_user = false;
                 }
                 _ => {
-                    if !is_safe_tool(tool_name) { _last_was_user = true; }
+                    // Unsupported tool calls break consolidation batches
+                    if !is_safe_tool(tool_name) {
+                        ops.push(Op { ts, tz, model: model.clone(), session: sid.clone(), kind: OpKind::BatchBreak, path: String::new() });
+                    }
                 }
             }
         }
@@ -461,8 +467,15 @@ fn extract_claude_code(path: &Path, includes: &[Pattern], excludes: &[Pattern], 
             cwd = Some(c.to_string());
         }
         
-        // Only process assistant messages
+        // Check message type
         let typ = e.get("type").and_then(|v| v.as_str());
+        
+        // User messages break consolidation batches
+        if typ == Some("user") {
+            ops.push(Op { ts, tz, model: model.clone(), session: sid.clone(), kind: OpKind::BatchBreak, path: String::new() });
+            continue;
+        }
+        
         if typ != Some("assistant") { continue; }
         
         // Extract model
@@ -539,7 +552,12 @@ fn extract_claude_code(path: &Path, includes: &[Pattern], excludes: &[Pattern], 
                                 }
                             }
                         }
-                        _ => {}
+                        _ => {
+                            // Unsupported tool calls break consolidation batches
+                            if !is_safe_tool(tool_name) {
+                                ops.push(Op { ts, tz, model: model.clone(), session: sid.clone(), kind: OpKind::BatchBreak, path: String::new() });
+                            }
+                        }
                     }
                 }
             }
@@ -1173,12 +1191,23 @@ fn main() -> Result<()> {
         // Group into batches
         let mut result: Vec<Vec<usize>> = Vec::new();
         let mut current_batch: Vec<usize> = Vec::new();
+        let mut current_batch_edits: Vec<(String, String)> = Vec::new(); // (old, new) for line conflict check
         let mut last_ts: Option<i64> = None;
         let mut last_session: Option<&str> = None;
         
+        // Helper to check if adding an edit would create line conflicts
+        let check_line_conflict = |batch_edits: &[(String, String)], new_old: &str, new_new: &str| -> bool {
+            if batch_edits.is_empty() {
+                return false;
+            }
+            let mut test_edits = batch_edits.to_vec();
+            test_edits.push((new_old.to_string(), new_new.to_string()));
+            consolidate::has_line_conflicts(&test_edits)
+        };
+        
         for (i, op) in all_ops.iter().enumerate() {
             match &op.kind {
-                OpKind::Write(_) | OpKind::Edit { .. } => {
+                OpKind::Write(_) => {
                     let can_extend = match (last_ts, last_session) {
                         (Some(lt), Some(ls)) => {
                             consolidate::can_consolidate(lt, op.ts.timestamp(), ls, &op.session, CONSOLIDATION_MAX_GAP_SECONDS)
@@ -1193,15 +1222,41 @@ fn main() -> Result<()> {
                             result.push(current_batch);
                         }
                         current_batch = vec![i];
+                        current_batch_edits.clear();
                     }
                     last_ts = Some(op.ts.timestamp());
                     last_session = Some(&op.session);
                 }
-                OpKind::Start | OpKind::End => {
-                    // Session boundaries break batches
+                OpKind::Edit { old, new } => {
+                    let can_extend = match (last_ts, last_session) {
+                        (Some(lt), Some(ls)) => {
+                            consolidate::can_consolidate(lt, op.ts.timestamp(), ls, &op.session, CONSOLIDATION_MAX_GAP_SECONDS)
+                        }
+                        _ => false,
+                    };
+                    
+                    // Check for line conflicts if we're extending
+                    let has_conflict = can_extend && check_line_conflict(&current_batch_edits, old, new);
+                    
+                    if can_extend && !has_conflict {
+                        current_batch.push(i);
+                        current_batch_edits.push((old.clone(), new.clone()));
+                    } else {
+                        if !current_batch.is_empty() {
+                            result.push(current_batch);
+                        }
+                        current_batch = vec![i];
+                        current_batch_edits = vec![(old.clone(), new.clone())];
+                    }
+                    last_ts = Some(op.ts.timestamp());
+                    last_session = Some(&op.session);
+                }
+                OpKind::Start | OpKind::End | OpKind::BatchBreak => {
+                    // Session boundaries, user messages, and unsupported tools break batches
                     if !current_batch.is_empty() {
                         result.push(current_batch);
                         current_batch = Vec::new();
+                        current_batch_edits.clear();
                     }
                     last_ts = None;
                     last_session = None;
@@ -1250,8 +1305,8 @@ fn main() -> Result<()> {
     
     for (op_idx, op) in all_ops.iter().enumerate() {
         match &op.kind {
-            OpKind::Start | OpKind::End => {
-                // Session markers are for batching logic only, no commits created
+            OpKind::Start | OpKind::End | OpKind::BatchBreak => {
+                // Session markers and batch breaks are for batching logic only, no commits created
                 // All session info is in the commit message body
                 seen_sessions.insert(op.session.clone());
             }
